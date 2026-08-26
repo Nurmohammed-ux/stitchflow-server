@@ -21,6 +21,7 @@ const client = new MongoClient(uri, {
 
 const database = client.db("stitchFlow_db");
 const usersCollection = database.collection("users");
+const productsCollection = database.collection("products");
 
 let cachedClient = null;
 
@@ -50,7 +51,7 @@ app.post("/users", async (req, res) => {
   try {
     await connectToDatabase();
     const user = req.body;
-    user.role = "user";
+    user.role = "buyer";
     user.createdAt = new Date();
     const email = user.email;
     const existingUser = await usersCollection.findOne({ email });
@@ -61,6 +62,36 @@ app.post("/users", async (req, res) => {
 
     const result = await usersCollection.insertOne(user);
     res.send(user);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+// products related apis
+app.post("/products", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const product = req.body;
+    product.createdAt = new Date();
+
+    const result = await productsCollection.insertOne(product);
+
+    res.status(201).send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/products/our-products", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const limit = Number(req.query.limit) || 6;
+
+    const cursor = productsCollection.find().sort({ createdAt: -1 }).limit(limit);
+    const result = await cursor.toArray();
+    res.send(result);
   } catch (error) {
     res.status(500).send({ message: error.message });
   }
