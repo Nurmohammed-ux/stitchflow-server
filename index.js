@@ -83,14 +83,71 @@ app.post("/products", async (req, res) => {
   }
 });
 
+app.get("/products", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const search = req.query.search || "";
+    const page = parseInt(req.query.page);
+    const limit = parseInt(req.query.limit);
+    const skip = (page - 1) * limit;
+
+    // Case-insensitive regex search query across product fields
+    const query = search
+      ? {
+          $or: [
+            { productName: { $regex: search, $options: "i" } },
+            { category: { $regex: search, $options: "i" } },
+            { description: { $regex: search, $options: "i" } },
+          ],
+        }
+      : {};
+
+    // Get total count of matching products for frontend pagination
+    const totalProducts = await productsCollection.countDocuments(query);
+
+    // Fetch the paginated slice of products
+    const products = await productsCollection
+      .find(query)
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    res.send({
+      products,
+      totalProducts,
+      totalPages: Math.ceil(totalProducts / limit),
+      currentPage: page,
+    });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
 app.get("/products/our-products", async (req, res) => {
   try {
     await connectToDatabase();
 
     const limit = Number(req.query.limit) || 6;
 
-    const cursor = productsCollection.find().sort({ createdAt: -1 }).limit(limit);
+    const cursor = productsCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .limit(limit);
     const result = await cursor.toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/products/:id", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
+    const result = await productsCollection.findOne(query);
     res.send(result);
   } catch (error) {
     res.status(500).send({ message: error.message });
