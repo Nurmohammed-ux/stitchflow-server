@@ -58,6 +58,254 @@ app.get("/health", (req, res) => {
   });
 });
 
+// ** admin only
+app.get("/dashboard/admin-stats", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    // Make sure your verifyToken adds email to req.user
+    const admin = await usersCollection.findOne({
+      email: req.query.email,
+    });
+
+    if (!admin || admin.role !== "admin") {
+      return res.status(403).send({
+        message: "Forbidden. Admin access required.",
+      });
+    }
+
+    const [
+      totalUsers,
+      totalProducts,
+      totalOrders,
+      totalTrackings,
+
+      pendingOrders,
+      approvedOrders,
+      rejectedOrders,
+      completedOrders,
+
+      paidOrders,
+      unpaidOrders,
+
+      revenueResult,
+      orderStatusResult,
+      userRoleResult,
+      monthlyOrdersResult,
+
+      recentOrders,
+      recentProducts,
+      recentTrackings,
+    ] = await Promise.all([
+      usersCollection.countDocuments(),
+
+      productsCollection.countDocuments(),
+
+      ordersCollection.countDocuments(),
+
+      trackingCollection.countDocuments(),
+
+      ordersCollection.countDocuments({
+        orderStatus: "pending-review",
+      }),
+
+      ordersCollection.countDocuments({
+        orderStatus: "approved",
+      }),
+
+      ordersCollection.countDocuments({
+        orderStatus: "rejected",
+      }),
+
+      ordersCollection.countDocuments({
+        orderStatus: "completed",
+      }),
+
+      ordersCollection.countDocuments({
+        paymentStatus: "paid",
+      }),
+
+      ordersCollection.countDocuments({
+        paymentStatus: {
+          $ne: "paid",
+        },
+      }),
+
+      ordersCollection
+        .aggregate([
+          {
+            $match: {
+              paymentStatus: "paid",
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              total: {
+                $sum: {
+                  $toDouble: "$totalPrice",
+                },
+              },
+            },
+          },
+        ])
+        .toArray(),
+
+      ordersCollection
+        .aggregate([
+          {
+            $group: {
+              _id: "$orderStatus",
+              count: {
+                $sum: 1,
+              },
+            },
+          },
+          {
+            $sort: {
+              count: -1,
+            },
+          },
+        ])
+        .toArray(),
+
+      usersCollection
+        .aggregate([
+          {
+            $group: {
+              _id: "$role",
+              count: {
+                $sum: 1,
+              },
+            },
+          },
+          {
+            $sort: {
+              count: -1,
+            },
+          },
+        ])
+        .toArray(),
+
+      ordersCollection
+        .aggregate([
+          {
+            $match: {
+              createdAt: {
+                $gte: new Date(
+                  new Date().getFullYear(),
+                  new Date().getMonth() - 5,
+                  1,
+                ),
+              },
+            },
+          },
+          {
+            $group: {
+              _id: {
+                year: {
+                  $year: "$createdAt",
+                },
+                month: {
+                  $month: "$createdAt",
+                },
+              },
+              orders: {
+                $sum: 1,
+              },
+            },
+          },
+          {
+            $sort: {
+              "_id.year": 1,
+              "_id.month": 1,
+            },
+          },
+        ])
+        .toArray(),
+
+      ordersCollection
+        .find({})
+        .sort({
+          createdAt: -1,
+        })
+        .limit(6)
+        .toArray(),
+
+      productsCollection
+        .find({})
+        .sort({
+          createdAt: -1,
+        })
+        .limit(5)
+        .toArray(),
+
+      trackingCollection
+        .find({})
+        .sort({
+          createdAt: -1,
+        })
+        .limit(5)
+        .toArray(),
+    ]);
+
+    const totalRevenue = revenueResult[0]?.total || 0;
+
+    const usersByRole = {
+      buyer: 0,
+      manager: 0,
+      admin: 0,
+    };
+
+    userRoleResult.forEach((item) => {
+      usersByRole[item._id] = item.count;
+    });
+
+    const monthlyOrders = monthlyOrdersResult.map((item) => ({
+      month: `${item._id.year}-${String(item._id.month).padStart(2, "0")}`,
+      orders: item.orders,
+    }));
+
+    res.send({
+      stats: {
+        totalUsers,
+        totalProducts,
+        totalOrders,
+        totalTrackings,
+
+        pendingOrders,
+        approvedOrders,
+        rejectedOrders,
+        completedOrders,
+
+        paidOrders,
+        unpaidOrders,
+
+        totalRevenue,
+      },
+
+      usersByRole,
+
+      orderStatus: orderStatusResult.map((item) => ({
+        status: item._id,
+        count: item.count,
+      })),
+
+      monthlyOrders,
+
+      recentOrders,
+      recentProducts,
+      recentTrackings,
+    });
+  } catch (error) {
+    console.error("Admin dashboard error:", error);
+
+    res.status(500).send({
+      message: "Failed to load admin dashboard",
+    });
+  }
+});
+
 // users related apis
 app.post("/users", async (req, res) => {
   try {
@@ -76,6 +324,92 @@ app.post("/users", async (req, res) => {
     res.send(user);
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/users/:email/role", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const email = req.params.email;
+    const query = { email };
+    const result = await usersCollection.findOne(query);
+
+    res.send({ role: result?.role || "buyer" });
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/users", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const search = req.query.search || "";
+
+    const users = await usersCollection
+      .find({
+        $or: [
+          {
+            displayName: {
+              $regex: search,
+              $options: "i",
+            },
+          },
+          {
+            email: {
+              $regex: search,
+              $options: "i",
+            },
+          },
+        ],
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(users);
+  } catch (error) {
+    console.log(error);
+    res.status(500).send({
+      message: "Failed to get users",
+    });
+  }
+});
+
+app.patch("/users/:id", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const id = req.params.id;
+
+    const { role, status } = req.body;
+
+    const updateData = {};
+
+    if (role) {
+      updateData.role = role;
+    }
+
+    if (status) {
+      updateData.status = status;
+    }
+
+    const result = await usersCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+      },
+      {
+        $set: updateData,
+      },
+    );
+
+    res.send(result);
+  } catch (error) {
+    console.log(error);
+
+    res.status(500).send({
+      message: "Failed to update user",
+    });
   }
 });
 
@@ -319,8 +653,7 @@ app.post("/orders", async (req, res) => {
 
     res.status(201).send({
       success: true,
-      message:
-        "Order submitted successfully. Waiting for manager review.",
+      message: "Order submitted successfully. Waiting for manager review.",
 
       orderId: orderResult.insertedId,
       trackingId,
