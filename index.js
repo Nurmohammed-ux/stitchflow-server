@@ -500,6 +500,35 @@ app.get("/products/:id", async (req, res) => {
   }
 });
 
+app.patch("/products/home/:id", async (req, res) => {
+  const id = req.params.id;
+  const { showOnHome } = req.body;
+
+  const result = await productsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    {
+      $set: {
+        showOnHome,
+      },
+    },
+  );
+
+  res.send(result);
+});
+
+app.delete("/products/:id", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
+    const result = await productsCollection.deleteOne(query);
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
 // payment related apis
 app.post("/payment-checkout-session", async (req, res) => {
   try {
@@ -665,6 +694,17 @@ app.post("/orders", async (req, res) => {
       success: false,
       message: "Failed to create order",
     });
+  }
+});
+
+app.get("/orders", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const result = await ordersCollection.find().toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
   }
 });
 
