@@ -477,7 +477,7 @@ app.get("/products/our-products", async (req, res) => {
     const limit = Number(req.query.limit) || 6;
 
     const cursor = productsCollection
-      .find()
+      .find({ showOnHome: true })
       .sort({ createdAt: -1 })
       .limit(limit);
     const result = await cursor.toArray();
@@ -514,6 +514,52 @@ app.patch("/products/home/:id", async (req, res) => {
   );
 
   res.send(result);
+});
+
+app.patch("/products/:id", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const id = req.params.id;
+
+    const {
+      productName,
+      description,
+      category,
+      price,
+      availableQuantity,
+      minimumOrder,
+      images,
+      demoVideo,
+      paymentOptions,
+    } = req.body;
+
+    const query = { _id: new ObjectId(id) };
+
+    const updateData = {
+      productName,
+      description,
+      category,
+      price: Number(price),
+      availableQuantity: Number(availableQuantity),
+      minimumOrder: Number(minimumOrder),
+      images,
+      demoVideo,
+      paymentOptions,
+      updatedAt: new Date(),
+    };
+
+    const result = await productsCollection.updateOne(query, {
+      $set: updateData,
+    });
+
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({
+      message: error.message,
+    });
+  }
 });
 
 app.delete("/products/:id", async (req, res) => {
@@ -705,6 +751,44 @@ app.get("/orders", async (req, res) => {
     res.send(result);
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/orders/:id", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
+    const order = await ordersCollection.findOne(query);
+
+    if (!order) {
+      return res.status(404).send({ message: "Order not found " });
+    }
+
+    res.send(order);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+// Trackings related apis
+app.get("/trackings/:trackingId", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const trackingId = req.params.trackingId;
+
+    const trackings = await trackingCollection
+      .find({ trackingId })
+      .sort({ createdAt: 1 })
+      .toArray();
+
+    res.send(trackings);
+  } catch (error) {
+    res.status(500).send({
+      message: error.message,
+    });
   }
 });
 
