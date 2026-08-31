@@ -306,7 +306,6 @@ app.get("/dashboard/admin-stats", async (req, res) => {
   }
 });
 
-
 // manager only
 app.get("/manager/dashboard", async (req, res) => {
   try {
@@ -348,7 +347,6 @@ app.get("/manager/dashboard", async (req, res) => {
     });
   }
 });
-
 
 // users related apis
 app.post("/users", async (req, res) => {
@@ -457,7 +455,6 @@ app.patch("/users/:id", async (req, res) => {
   }
 });
 
-
 // products related apis
 app.post("/products", async (req, res) => {
   try {
@@ -512,6 +509,48 @@ app.get("/products", async (req, res) => {
     });
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+});
+
+// manager manage product
+app.get("/products/manager", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const email = req.query.email;
+    const search = req.query.search || "";
+
+    // Guard clause: Prevent MongoDB casting errors if email is missing
+    if (!email) {
+      return res
+        .status(400)
+        .json({ message: "Email query parameter is required." });
+    }
+
+    const products = await productsCollection
+      .find({
+        createdBy: email,
+        $or: [
+          {
+            productName: {
+              $regex: search,
+              $options: "i",
+            },
+          },
+          {
+            category: {
+              $regex: search,
+              $options: "i",
+            },
+          },
+        ],
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(products);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
@@ -799,6 +838,59 @@ app.get("/orders", async (req, res) => {
   }
 });
 
+app.get("/orders/manager", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const orderStatus = req.query.orderStatus;
+    const query = orderStatus ? { orderStatus } : {};
+
+    const orders = await ordersCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(orders);
+  } catch (error) {
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.patch("/orders/:id", async (req, res) => {
+  try {
+    await connectToDatabase();
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) };
+
+    const updateData = req.body;
+
+    // If approving, you can also log when it was approved
+    if (
+      updateData.orderStatus === "approved" ||
+      updateData.paymentStatus === "ready-for-payment"
+    ) {
+      updateData.approvedAt = new Date();
+    }
+
+    const result = await ordersCollection.updateOne(query, {
+      $set: updateData,
+    });
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "Order not found" });
+    }
+
+    res.send({
+      success: true,
+      message: "Order updated successfully",
+      result,
+    });
+  } catch (error) {
+    console.error("Order update error:", error);
+    res.status(500).send({ message: error.message });
+  }
+});
+
 app.get("/orders/:id", async (req, res) => {
   try {
     await connectToDatabase();
@@ -818,19 +910,22 @@ app.get("/orders/:id", async (req, res) => {
 });
 
 // Trackings related apis
+
 app.get("/trackings/:trackingId", async (req, res) => {
   try {
     await connectToDatabase();
 
     const trackingId = req.params.trackingId;
 
-    const trackings = await trackingCollection
+    // Fetch all logs matching this tracking ID, sorted by creation date (oldest to newest for timelines)
+    const trackingLogs = await trackingCollection
       .find({ trackingId })
       .sort({ createdAt: 1 })
       .toArray();
 
-    res.send(trackings);
+    res.send(trackingLogs);
   } catch (error) {
+    console.error("Fetch tracking error:", error);
     res.status(500).send({
       message: error.message,
     });
