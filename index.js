@@ -306,6 +306,50 @@ app.get("/dashboard/admin-stats", async (req, res) => {
   }
 });
 
+
+// manager only
+app.get("/manager/dashboard", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const totalProducts = await productsCollection.countDocuments();
+
+    const totalOrders = await ordersCollection.countDocuments();
+
+    const pendingOrders = await ordersCollection.countDocuments({
+      orderStatus: "pending-review",
+    });
+
+    const approvedOrders = await ordersCollection.countDocuments({
+      orderStatus: "approved",
+    });
+
+    const rejectedOrders = await ordersCollection.countDocuments({
+      orderStatus: "rejected",
+    });
+
+    const recentOrders = await ordersCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    res.send({
+      totalProducts,
+      totalOrders,
+      pendingOrders,
+      approvedOrders,
+      rejectedOrders,
+      recentOrders,
+    });
+  } catch (error) {
+    res.status(500).send({
+      message: error.message,
+    });
+  }
+});
+
+
 // users related apis
 app.post("/users", async (req, res) => {
   try {
@@ -412,6 +456,7 @@ app.patch("/users/:id", async (req, res) => {
     });
   }
 });
+
 
 // products related apis
 app.post("/products", async (req, res) => {
