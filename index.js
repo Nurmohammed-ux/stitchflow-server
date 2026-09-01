@@ -795,6 +795,7 @@ async function logTracking(trackingId, status, details = "") {
   }
 }
 
+
 // payment related apis
 app.post("/payment-checkout-session", async (req, res) => {
   try {
@@ -939,7 +940,11 @@ app.patch("/payment-success", async (req, res) => {
     // CREATE INITIAL TRACKING LOG
     // =====================================================
 
-    await logTracking(trackingId, "payment-confirmed", "Payment successfully verified via Stripe.");
+    await logTracking(
+      trackingId,
+      "payment-confirmed",
+      "Payment successfully verified via Stripe.",
+    );
 
     // =====================================================
     // RESPONSE
@@ -961,6 +966,7 @@ app.patch("/payment-success", async (req, res) => {
     });
   }
 });
+
 
 // orders related api
 app.post("/orders", async (req, res) => {
@@ -1137,7 +1143,28 @@ app.get("/orders/manager", async (req, res) => {
     await connectToDatabase();
 
     const orderStatus = req.query.orderStatus;
-    const query = orderStatus ? { orderStatus } : {};
+    let query = {};
+
+    if (orderStatus) {
+      if (orderStatus === "approved") {
+        query.orderStatus = { 
+          $in: [
+            "approved", 
+            "processing", 
+            "cutting-completed",
+            "sewing-started",
+            "finishing",
+            "qc-checked",
+            "packed",
+            "shipped", 
+            "out-for-delivery", 
+            "in-transit"
+          ] 
+        };
+      } else {
+        query = { orderStatus };
+      }
+    }
 
     const orders = await ordersCollection
       .find(query)
@@ -1221,10 +1248,11 @@ app.patch("/orders/:id", async (req, res) => {
         {
           $set: {
             status: "approved",
-            details: "Order has been approved by management and is ready for payment.",
+            details:
+              "Order has been approved by management and is ready for payment.",
             updatedAt: new Date(),
           },
-        }
+        },
       );
     }
 
@@ -1258,6 +1286,53 @@ app.get("/orders/:id", async (req, res) => {
 });
 
 // Trackings related apis
+app.post("/tracking", async (req, res) => {
+  try {
+    const trackingData = req.body;
+
+    if (
+      !trackingData.orderId ||
+      !trackingData.trackingId ||
+      !trackingData.status
+    ) {
+      return res
+        .status(400)
+        .send({ message: "Missing required tracking fields" });
+    }
+
+    // Convert orderId to ObjectId if it's being sent as a string from the client
+    const queryOrderId =
+      typeof trackingData.orderId === "string"
+        ? new ObjectId(trackingData.orderId)
+        : trackingData.orderId;
+
+    // Optional: make sure orderId in the tracking document is also properly an ObjectId if needed
+    trackingData.orderId = queryOrderId;
+
+    // Insert into tracking/logs collection
+    const result = await trackingCollection.insertOne(trackingData);
+
+    // Keep the main order document synced with the latest status
+    await ordersCollection.updateOne(
+      { _id: queryOrderId },
+      {
+        $set: {
+          orderStatus: trackingData.status,
+          updatedAt: new Date(),
+        },
+      },
+    );
+
+    res.send({
+      success: true,
+      message: "Tracking update added successfully",
+      result,
+    });
+  } catch (error) {
+    console.error("Add tracking error:", error);
+    res.status(500).send({ message: error.message });
+  }
+});
 
 app.get("/trackings/:trackingId", async (req, res) => {
   try {
