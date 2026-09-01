@@ -47,6 +47,7 @@ const usersCollection = database.collection("users");
 const productsCollection = database.collection("products");
 const ordersCollection = database.collection("orders");
 const trackingCollection = database.collection("trackings");
+const paymentCollection = database.collection("payments");
 
 let cachedClient = null;
 
@@ -397,19 +398,29 @@ app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
       return res.status(403).send({ message: "Forbidden access" });
     }
 
-    const orders = await ordersCollection.find({ customerEmail: email }).toArray();
+    const orders = await ordersCollection
+      .find({ customerEmail: email })
+      .toArray();
 
     const totalOrders = orders.length;
-    const pendingOrders = orders.filter(o => o.orderStatus === "pending-review").length;
-    const approvedOrders = orders.filter(o => o.orderStatus === "approved").length;
-    const rejectedOrders = orders.filter(o => o.orderStatus === "rejected").length;
-    const completedOrders = orders.filter(o => o.orderStatus === "completed").length;
-    
-    const paidOrders = orders.filter(o => o.paymentStatus === "paid").length;
+    const pendingOrders = orders.filter(
+      (o) => o.orderStatus === "pending-review",
+    ).length;
+    const approvedOrders = orders.filter(
+      (o) => o.orderStatus === "approved",
+    ).length;
+    const rejectedOrders = orders.filter(
+      (o) => o.orderStatus === "rejected",
+    ).length;
+    const completedOrders = orders.filter(
+      (o) => o.orderStatus === "completed",
+    ).length;
+
+    const paidOrders = orders.filter((o) => o.paymentStatus === "paid").length;
     const unpaidOrders = totalOrders - paidOrders;
 
     const totalSpent = orders
-      .filter(o => o.paymentStatus === "paid")
+      .filter((o) => o.paymentStatus === "paid")
       .reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
 
     // 1. Format order status data for the PieChart
@@ -418,7 +429,7 @@ app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
       { status: "approved", count: approvedOrders },
       { status: "rejected", count: rejectedOrders },
       { status: "completed", count: completedOrders },
-    ].filter(item => item.count > 0); // optional: filter out zeros
+    ].filter((item) => item.count > 0); // optional: filter out zeros
 
     // 2. Format recent orders
     const recentOrders = orders
@@ -426,7 +437,9 @@ app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
       .slice(0, 5);
 
     // 3. Optional active order and latest tracking lookups...
-    const activeOrder = orders.find(o => o.orderStatus === "approved" && o.productionStage !== "delivered");
+    const activeOrder = orders.find(
+      (o) => o.orderStatus === "approved" && o.productionStage !== "delivered",
+    );
 
     res.send({
       stats: {
@@ -760,12 +773,192 @@ app.delete("/products/:id", async (req, res) => {
   }
 });
 
+// =====================================================
+// TRACKING HELPER FUNCTION
+// =====================================================
+async function logTracking(trackingId, status, details = "") {
+  try {
+    // Find the order first to get its orderId if needed
+    const order = await ordersCollection.findOne({ trackingId });
+
+    const trackingRecord = {
+      orderId: order ? order._id : null,
+      trackingId,
+      status,
+      details: details || `Order status updated to: ${status}`,
+      createdAt: new Date(),
+    };
+
+    await trackingCollection.insertOne(trackingRecord);
+  } catch (error) {
+    console.error("Error logging tracking:", error);
+  }
+}
+
 // payment related apis
 app.post("/payment-checkout-session", async (req, res) => {
   try {
+    const orderInfo = req.body;
+    const amount = parseInt(orderInfo.cost) * 100;
+
+    const session = await stripe.checkout.sessions.create({
+      line_items: [
+        {
+          price_data: {
+            currency: "BDT",
+            unit_amount: amount,
+            product_data: {
+              name: `Please, pay for ${orderInfo.orderName}`,
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      customer_email: orderInfo.customerEmail,
+      mode: "payment",
+      metadata: {
+        orderId: orderInfo.orderId,
+        orderName: orderInfo.orderName,
+        trackingId: orderInfo.trackingId,
+      },
+      success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+    });
+
+    res.send({ url: session.url });
   } catch (error) {
     console.error(error);
     res.status(500).send({ message: error.message });
+  }
+});
+
+app.patch("/payment-success", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const sessionId = req.query.session_id;
+
+    if (!sessionId) {
+      return res.status(400).send({
+        message: "Session ID is required",
+      });
+    }
+
+    // Get Stripe checkout session
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    // Make sure payment was actually completed
+    if (session.payment_status !== "paid") {
+      return res.send({
+        success: false,
+        message: "Payment not completed",
+      });
+    }
+
+    // Order ID stored in Stripe metadata
+    const orderId = session.metadata.orderId;
+
+    if (!orderId) {
+      return res.status(400).send({
+        message: "Order ID not found in payment session",
+      });
+    }
+
+    const query = {
+      _id: new ObjectId(orderId),
+    };
+
+    // =====================================================
+    // GET ORDER FIRST (Fixes scope/ReferenceError)
+    // =====================================================
+
+    const order = await ordersCollection.findOne(query);
+
+    if (!order) {
+      return res.status(404).send({
+        message: "Order not found",
+      });
+    }
+
+    const trackingId = order.trackingId;
+
+    // Check whether this Stripe session was already processed
+    const existingPayment = await paymentCollection.findOne({
+      sessionId: session.id,
+    });
+
+    // =====================================================
+    // PAYMENT ALREADY PROCESSED
+    // =====================================================
+
+    if (existingPayment) {
+      return res.send({
+        success: true,
+        message: "Payment already processed",
+        modifyOrder: null,
+        orderId: order._id.toString(),
+        trackingId,
+        transactionId: session.payment_intent,
+        paymentInfo: existingPayment,
+      });
+    }
+
+    // =====================================================
+    // UPDATE ORDER
+    // =====================================================
+
+    const update = {
+      $set: {
+        paymentStatus: "paid",
+        transactionId: session.payment_intent,
+        paidAt: new Date(),
+        updatedAt: new Date(),
+      },
+    };
+
+    const result = await ordersCollection.updateOne(query, update);
+
+    // =====================================================
+    // CREATE PAYMENT RECORD
+    // =====================================================
+
+    const paymentRecord = {
+      orderId: order._id,
+      transactionId: session.payment_intent,
+      sessionId: session.id,
+      amount: session.amount_total / 100,
+      currency: session.currency,
+      customerEmail: session.customer_details?.email || session.customer_email,
+      paymentStatus: session.payment_status,
+      paidAt: new Date(),
+    };
+
+    const resultPayment = await paymentCollection.insertOne(paymentRecord);
+
+    // =====================================================
+    // CREATE INITIAL TRACKING LOG
+    // =====================================================
+
+    await logTracking(trackingId, "payment-confirmed", "Payment successfully verified via Stripe.");
+
+    // =====================================================
+    // RESPONSE
+    // =====================================================
+
+    return res.send({
+      success: true,
+      message: "Payment processed successfully",
+      modifyOrder: result,
+      trackingId,
+      transactionId: session.payment_intent,
+      paymentInfo: resultPayment,
+    });
+  } catch (error) {
+    console.error("Payment success route error:", error);
+
+    res.status(500).send({
+      message: error.message,
+    });
   }
 });
 
@@ -1017,6 +1210,22 @@ app.patch("/orders/:id", async (req, res) => {
 
     if (result.matchedCount === 0) {
       return res.status(404).send({ message: "Order not found" });
+    }
+
+    // =====================================================
+    // SYNC TRACKING STATUS IF ORDER IS APPROVED
+    // =====================================================
+    if (updateData.orderStatus === "approved") {
+      await trackingCollection.updateOne(
+        { orderId: new ObjectId(id) },
+        {
+          $set: {
+            status: "approved",
+            details: "Order has been approved by management and is ready for payment.",
+            updatedAt: new Date(),
+          },
+        }
+      );
     }
 
     res.send({
