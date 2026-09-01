@@ -6,6 +6,19 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const crypto = require("crypto");
 const port = process.env.PORT || 3000;
 const app = express();
+const { initializeApp, cert } = require("firebase-admin/app");
+const { getAuth } = require("firebase-admin/auth");
+
+try {
+  const serviceAccount = require("./stitchflow-client-firebase-adminkey.json");
+
+  initializeApp({
+    credential: cert(serviceAccount),
+  });
+  console.log("Firebase initialized");
+} catch (err) {
+  console.error("Firebase initialization error:", err);
+}
 
 function generateTrackingId() {
   const prefix = "TRK";
@@ -47,6 +60,32 @@ async function connectToDatabase() {
   return cachedClient;
 }
 
+//Jwt middleware
+const verifyFirebaseToken = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const authorization = req.headers.authorization;
+
+    if (!authorization || !authorization.startsWith("Bearer ")) {
+      return res
+        .status(401)
+        .send({ message: "Unauthorized Access: No token provided" });
+    }
+
+    const token = authorization.split(" ")[1];
+
+    const decoded = await getAuth().verifyIdToken(token);
+    req.token_email = decoded.email;
+    next();
+  } catch (err) {
+    console.error("Token verification error:", err.message);
+    return res.status(401).send({
+      message: "Invalid token",
+      error: err.message,
+    });
+  }
+};
+
 app.get("/", (req, res) => {
   res.send("StitchFlow server is running");
 });
@@ -58,7 +97,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ** admin only
+// ** admin dashboard statistics
 app.get("/dashboard/admin-stats", async (req, res) => {
   try {
     await connectToDatabase();
@@ -306,7 +345,7 @@ app.get("/dashboard/admin-stats", async (req, res) => {
   }
 });
 
-// manager only
+// * manager dashboard statistics
 app.get("/manager/dashboard", async (req, res) => {
   try {
     await connectToDatabase();
@@ -345,6 +384,68 @@ app.get("/manager/dashboard", async (req, res) => {
     res.status(500).send({
       message: error.message,
     });
+  }
+});
+
+// Get buyer dashboard statistics
+app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
+  try {
+    await connectToDatabase();
+    const email = req.query.email;
+
+    if (!email || email !== req.token_email) {
+      return res.status(403).send({ message: "Forbidden access" });
+    }
+
+    const orders = await ordersCollection.find({ customerEmail: email }).toArray();
+
+    const totalOrders = orders.length;
+    const pendingOrders = orders.filter(o => o.orderStatus === "pending-review").length;
+    const approvedOrders = orders.filter(o => o.orderStatus === "approved").length;
+    const rejectedOrders = orders.filter(o => o.orderStatus === "rejected").length;
+    const completedOrders = orders.filter(o => o.orderStatus === "completed").length;
+    
+    const paidOrders = orders.filter(o => o.paymentStatus === "paid").length;
+    const unpaidOrders = totalOrders - paidOrders;
+
+    const totalSpent = orders
+      .filter(o => o.paymentStatus === "paid")
+      .reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
+
+    // 1. Format order status data for the PieChart
+    const orderStatus = [
+      { status: "pending", count: pendingOrders },
+      { status: "approved", count: approvedOrders },
+      { status: "rejected", count: rejectedOrders },
+      { status: "completed", count: completedOrders },
+    ].filter(item => item.count > 0); // optional: filter out zeros
+
+    // 2. Format recent orders
+    const recentOrders = orders
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 5);
+
+    // 3. Optional active order and latest tracking lookups...
+    const activeOrder = orders.find(o => o.orderStatus === "approved" && o.productionStage !== "delivered");
+
+    res.send({
+      stats: {
+        totalOrders,
+        pendingOrders,
+        approvedOrders,
+        rejectedOrders,
+        completedOrders,
+        paidOrders,
+        unpaidOrders,
+        totalSpent,
+      },
+      orderStatus,
+      recentOrders,
+      activeOrder: activeOrder || null,
+    });
+  } catch (error) {
+    console.error("Stats error:", error);
+    res.status(500).send({ message: error.message });
   }
 });
 
@@ -853,6 +954,44 @@ app.get("/orders/manager", async (req, res) => {
     res.send(orders);
   } catch (error) {
     res.status(500).send({ message: error.message });
+  }
+});
+
+// Get all orders of logged-in buyer
+app.get("/orders/my-orders", verifyFirebaseToken, async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const email = req.query.email;
+
+    if (!email) {
+      return res.status(400).send({
+        message: "Email is required",
+      });
+    }
+
+    if (email !== req.token_email) {
+      return res.status(403).send({
+        message: "Forbidden access",
+      });
+    }
+
+    const orders = await ordersCollection
+      .find({
+        customerEmail: email,
+      })
+      .sort({
+        createdAt: -1,
+      })
+      .toArray();
+
+    res.send(orders);
+  } catch (error) {
+    console.error("My orders error:", error);
+
+    res.status(500).send({
+      message: error.message,
+    });
   }
 });
 
