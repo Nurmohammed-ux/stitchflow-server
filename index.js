@@ -132,7 +132,7 @@ app.get("/dashboard/admin-stats", async (req, res) => {
       trackingCollection.countDocuments(),
       ordersCollection.find({}).toArray(),
       trackingCollection.find({}).sort({ createdAt: -1 }).toArray(),
-      
+
       usersCollection
         .aggregate([
           { $group: { _id: "$role", count: { $sum: 1 } } },
@@ -180,7 +180,8 @@ app.get("/dashboard/admin-stats", async (req, res) => {
     const enrichedOrders = orders.map((o) => {
       const trackingStatus = trackingMap.get(o.trackingId) || null;
       // If tracking status is approved, override/treat effective status as approved
-      const effectiveStatus = trackingStatus === "approved" ? "approved" : o.orderStatus;
+      const effectiveStatus =
+        trackingStatus === "approved" ? "approved" : o.orderStatus;
 
       return {
         ...o,
@@ -297,7 +298,8 @@ app.get("/manager/dashboard", async (req, res) => {
     // Enrich and compute effective status
     const enrichedOrders = orders.map((o) => {
       const trackingStatus = trackingMap.get(o.trackingId) || null;
-      const effectiveStatus = trackingStatus === "approved" ? "approved" : o.orderStatus;
+      const effectiveStatus =
+        trackingStatus === "approved" ? "approved" : o.orderStatus;
       return { ...o, trackingStatus, effectiveStatus };
     });
 
@@ -347,7 +349,7 @@ app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
       .toArray();
 
     const trackingIds = orders.map((o) => o.trackingId).filter(Boolean);
-    
+
     const trackings = await trackingCollection
       .find({ trackingId: { $in: trackingIds } })
       .toArray();
@@ -365,25 +367,31 @@ app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
     }));
 
     const totalOrders = enrichedOrders.length;
-    
+
     // Check approval via tracking collection status OR approvedAt date/orderStatus
     const pendingOrders = enrichedOrders.filter(
-      (o) => o.orderStatus === "pending-review" && o.trackingStatus !== "approved",
+      (o) =>
+        o.orderStatus === "pending-review" && o.trackingStatus !== "approved",
     ).length;
-    
+
     const approvedOrders = enrichedOrders.filter(
-      (o) => o.trackingStatus === "approved" || o.orderStatus === "approved" || o.approvedAt,
+      (o) =>
+        o.trackingStatus === "approved" ||
+        o.orderStatus === "approved" ||
+        o.approvedAt,
     ).length;
-    
+
     const rejectedOrders = enrichedOrders.filter(
       (o) => o.orderStatus === "rejected" || o.trackingStatus === "rejected",
     ).length;
-    
+
     const completedOrders = enrichedOrders.filter(
       (o) => o.orderStatus === "completed" || o.trackingStatus === "completed",
     ).length;
 
-    const paidOrders = enrichedOrders.filter((o) => o.paymentStatus === "paid").length;
+    const paidOrders = enrichedOrders.filter(
+      (o) => o.paymentStatus === "paid",
+    ).length;
     const unpaidOrders = totalOrders - paidOrders;
 
     const totalSpent = enrichedOrders
@@ -405,7 +413,9 @@ app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
 
     // 5. Active order lookup based on tracking status or approved state
     const activeOrder = enrichedOrders.find(
-      (o) => (o.trackingStatus === "approved" || o.orderStatus === "approved") && o.productionStage !== "delivered",
+      (o) =>
+        (o.trackingStatus === "approved" || o.orderStatus === "approved") &&
+        o.productionStage !== "delivered",
     );
 
     res.send({
@@ -762,7 +772,6 @@ async function logTracking(trackingId, status, details = "") {
   }
 }
 
-
 // payment related apis
 app.post("/payment-checkout-session", async (req, res) => {
   try {
@@ -933,7 +942,6 @@ app.patch("/payment-success", async (req, res) => {
     });
   }
 });
-
 
 // orders related api
 app.post("/orders", async (req, res) => {
@@ -1114,19 +1122,19 @@ app.get("/orders/manager", async (req, res) => {
 
     if (orderStatus) {
       if (orderStatus === "approved") {
-        query.orderStatus = { 
+        query.orderStatus = {
           $in: [
-            "approved", 
-            "processing", 
+            "approved",
+            "processing",
             "cutting-completed",
             "sewing-started",
             "finishing",
             "qc-checked",
             "packed",
-            "shipped", 
-            "out-for-delivery", 
-            "in-transit"
-          ] 
+            "shipped",
+            "out-for-delivery",
+            "in-transit",
+          ],
         };
       } else {
         query = { orderStatus };
@@ -1151,18 +1159,23 @@ app.get("/orders/my-orders", verifyFirebaseToken, async (req, res) => {
 
     const email = req.query.email;
 
+    // Validate email
     if (!email) {
       return res.status(400).send({
         message: "Email is required",
       });
     }
 
+    // Make sure buyer can only access their own orders
     if (email !== req.token_email) {
       return res.status(403).send({
         message: "Forbidden access",
       });
     }
 
+    // --------------------------------------------------
+    // 1. Get buyer's orders
+    // --------------------------------------------------
     const orders = await ordersCollection
       .find({
         customerEmail: email,
@@ -1172,7 +1185,153 @@ app.get("/orders/my-orders", verifyFirebaseToken, async (req, res) => {
       })
       .toArray();
 
-    res.send(orders);
+    // If buyer has no orders
+    if (orders.length === 0) {
+      return res.send([]);
+    }
+
+    // --------------------------------------------------
+    // 2. Collect tracking IDs and order IDs
+    // --------------------------------------------------
+    const trackingIds = orders.map((order) => order.trackingId).filter(Boolean);
+
+    const orderIds = orders.map((order) => order._id);
+
+    // --------------------------------------------------
+    // 3. Get tracking records
+    // --------------------------------------------------
+    const trackings = await trackingCollection
+      .find({
+        $or: [
+          // Normal trackingId
+          ...(trackingIds.length > 0
+            ? [{ trackingId: { $in: trackingIds } }]
+            : []),
+
+          // In case some old records use "id"
+          ...(trackingIds.length > 0 ? [{ id: { $in: trackingIds } }] : []),
+
+          // In case some old records use "tracking_id"
+          ...(trackingIds.length > 0
+            ? [{ tracking_id: { $in: trackingIds } }]
+            : []),
+
+          // Normal orderId relationship
+          ...(orderIds.length > 0 ? [{ orderId: { $in: orderIds } }] : []),
+        ],
+      })
+      // Newest tracking status first
+      .sort({
+        createdAt: -1,
+      })
+      .toArray();
+
+    // --------------------------------------------------
+    // 4. Create tracking map
+    // --------------------------------------------------
+    //
+    // Example:
+    //
+    // TRK-20260827-9834FF
+    //      ↓
+    // "cutting-completed"
+    //
+    // --------------------------------------------------
+
+    const trackingMap = new Map();
+
+    trackings.forEach((tracking) => {
+      const trackingId =
+        tracking.trackingId || tracking.id || tracking.tracking_id;
+
+      const status = tracking.status ? tracking.status.toLowerCase() : "";
+
+      // Map by trackingId
+      if (trackingId && !trackingMap.has(trackingId)) {
+        trackingMap.set(trackingId, status);
+      }
+
+      // Map by orderId
+      if (tracking.orderId) {
+        const orderId = tracking.orderId.toString();
+
+        if (!trackingMap.has(orderId)) {
+          trackingMap.set(orderId, status);
+        }
+      }
+    });
+
+    // --------------------------------------------------
+    // 5. Enrich orders
+    // --------------------------------------------------
+
+    const enrichedOrders = orders.map((order) => {
+      // Find latest tracking status
+      const trackingStatus =
+        trackingMap.get(order.trackingId) ||
+        trackingMap.get(order._id.toString()) ||
+        null;
+
+      // ------------------------------------------------
+      // ORDER STATUS
+      // ------------------------------------------------
+      //
+      // Tracking statuses that mean the order has
+      // already been approved.
+      //
+      const approvedStatuses = ["approved", "payment-confirmed"];
+
+      const isApprovedByTracking = approvedStatuses.includes(trackingStatus);
+
+      const effectiveOrderStatus = isApprovedByTracking
+        ? "approved"
+        : order.orderStatus;
+
+      // ------------------------------------------------
+      // PRODUCTION STAGE
+      // ------------------------------------------------
+
+      let effectiveProductionStage = order.productionStage || "not-started";
+
+      const productionStatuses = [
+        "cutting-completed",
+        "sewing-started",
+        "finishing",
+        "qc-checked",
+      ];
+
+      if (productionStatuses.includes(trackingStatus)) {
+        effectiveProductionStage = "in-production";
+      }
+
+      // ------------------------------------------------
+      // PRODUCTION COMPLETED
+      // ------------------------------------------------
+
+      const completedStatuses = [
+        "packed",
+        "shipped",
+        "out-for-delivery",
+        "delivered",
+      ];
+
+      if (completedStatuses.includes(trackingStatus)) {
+        effectiveProductionStage = "completed";
+      }
+
+      return {
+        ...order,
+        trackingStatus,
+        orderStatus: effectiveOrderStatus,
+        productionStage: effectiveProductionStage,
+      };
+    });
+
+    // --------------------------------------------------
+    // 6. Send response
+    // --------------------------------------------------
+
+    res.send(enrichedOrders);
   } catch (error) {
     console.error("My orders error:", error);
 
