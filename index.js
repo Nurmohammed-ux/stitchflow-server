@@ -103,7 +103,6 @@ app.get("/dashboard/admin-stats", async (req, res) => {
   try {
     await connectToDatabase();
 
-    // Make sure your verifyToken adds email to req.user
     const admin = await usersCollection.findOne({
       email: req.query.email,
     });
@@ -114,116 +113,30 @@ app.get("/dashboard/admin-stats", async (req, res) => {
       });
     }
 
+    // 1. Fetch collections concurrently, including all tracking data
     const [
       totalUsers,
       totalProducts,
       totalOrders,
       totalTrackings,
-
-      pendingOrders,
-      approvedOrders,
-      rejectedOrders,
-      completedOrders,
-
-      paidOrders,
-      unpaidOrders,
-
-      revenueResult,
-      orderStatusResult,
+      orders,
+      trackings,
       userRoleResult,
       monthlyOrdersResult,
-
-      recentOrders,
       recentProducts,
       recentTrackings,
     ] = await Promise.all([
       usersCollection.countDocuments(),
-
       productsCollection.countDocuments(),
-
       ordersCollection.countDocuments(),
-
       trackingCollection.countDocuments(),
-
-      ordersCollection.countDocuments({
-        orderStatus: "pending-review",
-      }),
-
-      ordersCollection.countDocuments({
-        orderStatus: "approved",
-      }),
-
-      ordersCollection.countDocuments({
-        orderStatus: "rejected",
-      }),
-
-      ordersCollection.countDocuments({
-        orderStatus: "completed",
-      }),
-
-      ordersCollection.countDocuments({
-        paymentStatus: "paid",
-      }),
-
-      ordersCollection.countDocuments({
-        paymentStatus: {
-          $ne: "paid",
-        },
-      }),
-
-      ordersCollection
-        .aggregate([
-          {
-            $match: {
-              paymentStatus: "paid",
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              total: {
-                $sum: {
-                  $toDouble: "$totalPrice",
-                },
-              },
-            },
-          },
-        ])
-        .toArray(),
-
-      ordersCollection
-        .aggregate([
-          {
-            $group: {
-              _id: "$orderStatus",
-              count: {
-                $sum: 1,
-              },
-            },
-          },
-          {
-            $sort: {
-              count: -1,
-            },
-          },
-        ])
-        .toArray(),
-
+      ordersCollection.find({}).toArray(),
+      trackingCollection.find({}).sort({ createdAt: -1 }).toArray(),
+      
       usersCollection
         .aggregate([
-          {
-            $group: {
-              _id: "$role",
-              count: {
-                $sum: 1,
-              },
-            },
-          },
-          {
-            $sort: {
-              count: -1,
-            },
-          },
+          { $group: { _id: "$role", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
         ])
         .toArray(),
 
@@ -243,53 +156,76 @@ app.get("/dashboard/admin-stats", async (req, res) => {
           {
             $group: {
               _id: {
-                year: {
-                  $year: "$createdAt",
-                },
-                month: {
-                  $month: "$createdAt",
-                },
+                year: { $year: "$createdAt" },
+                month: { $month: "$createdAt" },
               },
-              orders: {
-                $sum: 1,
-              },
+              orders: { $sum: 1 },
             },
           },
-          {
-            $sort: {
-              "_id.year": 1,
-              "_id.month": 1,
-            },
-          },
+          { $sort: { "_id.year": 1, "_id.month": 1 } },
         ])
         .toArray(),
 
-      ordersCollection
-        .find({})
-        .sort({
-          createdAt: -1,
-        })
-        .limit(6)
-        .toArray(),
-
-      productsCollection
-        .find({})
-        .sort({
-          createdAt: -1,
-        })
-        .limit(5)
-        .toArray(),
-
-      trackingCollection
-        .find({})
-        .sort({
-          createdAt: -1,
-        })
-        .limit(5)
-        .toArray(),
+      productsCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+      trackingCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
     ]);
 
-    const totalRevenue = revenueResult[0]?.total || 0;
+    // 2. Build a tracking status map for quick resolution
+    const trackingMap = new Map();
+    trackings.forEach((t) => {
+      trackingMap.set(t.trackingId, t.status);
+    });
+
+    // 3. Enrich orders with tracking status and determine effective status
+    const enrichedOrders = orders.map((o) => {
+      const trackingStatus = trackingMap.get(o.trackingId) || null;
+      // If tracking status is approved, override/treat effective status as approved
+      const effectiveStatus = trackingStatus === "approved" ? "approved" : o.orderStatus;
+
+      return {
+        ...o,
+        trackingStatus,
+        effectiveStatus,
+      };
+    });
+
+    // 4. Calculate metrics based on effective status
+    const pendingOrders = enrichedOrders.filter(
+      (o) => o.effectiveStatus === "pending-review",
+    ).length;
+
+    const approvedOrders = enrichedOrders.filter(
+      (o) => o.effectiveStatus === "approved",
+    ).length;
+
+    const rejectedOrders = enrichedOrders.filter(
+      (o) => o.effectiveStatus === "rejected",
+    ).length;
+
+    const completedOrders = enrichedOrders.filter(
+      (o) => o.effectiveStatus === "completed",
+    ).length;
+
+    const paidOrders = enrichedOrders.filter(
+      (o) => o.paymentStatus === "paid",
+    ).length;
+
+    const unpaidOrders = totalOrders - paidOrders;
+
+    const totalRevenue = enrichedOrders
+      .filter((o) => o.paymentStatus === "paid")
+      .reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
+
+    // 5. Generate dynamic order status distribution for charts
+    const statusCounts = {};
+    enrichedOrders.forEach((o) => {
+      const status = o.effectiveStatus || "unknown";
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    });
+
+    const orderStatusResult = Object.entries(statusCounts)
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count);
 
     const usersByRole = {
       buyer: 0,
@@ -306,72 +242,80 @@ app.get("/dashboard/admin-stats", async (req, res) => {
       orders: item.orders,
     }));
 
+    const recentOrders = enrichedOrders
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 6);
+
     res.send({
       stats: {
         totalUsers,
         totalProducts,
         totalOrders,
         totalTrackings,
-
         pendingOrders,
         approvedOrders,
         rejectedOrders,
         completedOrders,
-
         paidOrders,
         unpaidOrders,
-
         totalRevenue,
       },
-
       usersByRole,
-
-      orderStatus: orderStatusResult.map((item) => ({
-        status: item._id,
-        count: item.count,
-      })),
-
+      orderStatus: orderStatusResult,
       monthlyOrders,
-
       recentOrders,
       recentProducts,
       recentTrackings,
     });
   } catch (error) {
     console.error("Admin dashboard error:", error);
-
     res.status(500).send({
       message: "Failed to load admin dashboard",
     });
   }
 });
 
-// * manager dashboard statistics
+// ** manager dashboard statistics
 app.get("/manager/dashboard", async (req, res) => {
   try {
     await connectToDatabase();
 
-    const totalProducts = await productsCollection.countDocuments();
+    const [totalProducts, orders, trackings] = await Promise.all([
+      productsCollection.countDocuments(),
+      ordersCollection.find({}).toArray(),
+      trackingCollection.find({}).toArray(),
+    ]);
 
-    const totalOrders = await ordersCollection.countDocuments();
+    const totalOrders = orders.length;
 
-    const pendingOrders = await ordersCollection.countDocuments({
-      orderStatus: "pending-review",
+    // Map tracking statuses
+    const trackingMap = new Map();
+    trackings.forEach((t) => {
+      trackingMap.set(t.trackingId, t.status);
     });
 
-    const approvedOrders = await ordersCollection.countDocuments({
-      orderStatus: "approved",
+    // Enrich and compute effective status
+    const enrichedOrders = orders.map((o) => {
+      const trackingStatus = trackingMap.get(o.trackingId) || null;
+      const effectiveStatus = trackingStatus === "approved" ? "approved" : o.orderStatus;
+      return { ...o, trackingStatus, effectiveStatus };
     });
 
-    const rejectedOrders = await ordersCollection.countDocuments({
-      orderStatus: "rejected",
-    });
+    const pendingOrders = enrichedOrders.filter(
+      (o) => o.effectiveStatus === "pending-review",
+    ).length;
 
-    const recentOrders = await ordersCollection
-      .find({})
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
+    const approvedOrders = enrichedOrders.filter(
+      (o) => o.effectiveStatus === "approved",
+    ).length;
+
+    const rejectedOrders = enrichedOrders.filter(
+      (o) => o.effectiveStatus === "rejected",
+    ).length;
+
+    const recentOrders = enrichedOrders
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 5);
 
     res.send({
       totalProducts,
@@ -387,7 +331,6 @@ app.get("/manager/dashboard", async (req, res) => {
     });
   }
 });
-
 // Get buyer dashboard statistics
 app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
   try {
@@ -398,47 +341,71 @@ app.get("/dashboard/buyer-stats", verifyFirebaseToken, async (req, res) => {
       return res.status(403).send({ message: "Forbidden access" });
     }
 
+    // 1. Fetch user orders and tracking documents concurrently
     const orders = await ordersCollection
       .find({ customerEmail: email })
       .toArray();
 
-    const totalOrders = orders.length;
-    const pendingOrders = orders.filter(
-      (o) => o.orderStatus === "pending-review",
+    const trackingIds = orders.map((o) => o.trackingId).filter(Boolean);
+    
+    const trackings = await trackingCollection
+      .find({ trackingId: { $in: trackingIds } })
+      .toArray();
+
+    // Create a lookup map for fast tracking status retrieval
+    const trackingMap = new Map();
+    trackings.forEach((t) => {
+      trackingMap.set(t.trackingId, t.status);
+    });
+
+    // 2. Attach tracking status to each order object
+    const enrichedOrders = orders.map((o) => ({
+      ...o,
+      trackingStatus: trackingMap.get(o.trackingId) || null,
+    }));
+
+    const totalOrders = enrichedOrders.length;
+    
+    // Check approval via tracking collection status OR approvedAt date/orderStatus
+    const pendingOrders = enrichedOrders.filter(
+      (o) => o.orderStatus === "pending-review" && o.trackingStatus !== "approved",
     ).length;
-    const approvedOrders = orders.filter(
-      (o) => o.orderStatus === "approved",
+    
+    const approvedOrders = enrichedOrders.filter(
+      (o) => o.trackingStatus === "approved" || o.orderStatus === "approved" || o.approvedAt,
     ).length;
-    const rejectedOrders = orders.filter(
-      (o) => o.orderStatus === "rejected",
+    
+    const rejectedOrders = enrichedOrders.filter(
+      (o) => o.orderStatus === "rejected" || o.trackingStatus === "rejected",
     ).length;
-    const completedOrders = orders.filter(
-      (o) => o.orderStatus === "completed",
+    
+    const completedOrders = enrichedOrders.filter(
+      (o) => o.orderStatus === "completed" || o.trackingStatus === "completed",
     ).length;
 
-    const paidOrders = orders.filter((o) => o.paymentStatus === "paid").length;
+    const paidOrders = enrichedOrders.filter((o) => o.paymentStatus === "paid").length;
     const unpaidOrders = totalOrders - paidOrders;
 
-    const totalSpent = orders
+    const totalSpent = enrichedOrders
       .filter((o) => o.paymentStatus === "paid")
       .reduce((sum, o) => sum + Number(o.totalPrice || 0), 0);
 
-    // 1. Format order status data for the PieChart
+    // 3. Format order status data for the PieChart
     const orderStatus = [
       { status: "pending", count: pendingOrders },
       { status: "approved", count: approvedOrders },
       { status: "rejected", count: rejectedOrders },
       { status: "completed", count: completedOrders },
-    ].filter((item) => item.count > 0); // optional: filter out zeros
+    ].filter((item) => item.count > 0);
 
-    // 2. Format recent orders
-    const recentOrders = orders
+    // 4. Format recent orders (including trackingStatus if needed on frontend)
+    const recentOrders = enrichedOrders
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(0, 5);
 
-    // 3. Optional active order and latest tracking lookups...
-    const activeOrder = orders.find(
-      (o) => o.orderStatus === "approved" && o.productionStage !== "delivered",
+    // 5. Active order lookup based on tracking status or approved state
+    const activeOrder = enrichedOrders.find(
+      (o) => (o.trackingStatus === "approved" || o.orderStatus === "approved") && o.productionStage !== "delivered",
     );
 
     res.send({
