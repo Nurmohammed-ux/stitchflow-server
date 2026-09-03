@@ -126,7 +126,6 @@ const verifyManager = async (req, res, next) => {
   next();
 };
 
-
 // ** admin dashboard statistics
 app.get(
   "/dashboard/admin-stats",
@@ -180,10 +179,7 @@ app.get(
 
         ordersCollection.find({}).toArray(),
 
-        trackingCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .toArray(),
+        trackingCollection.find({}).sort({ createdAt: -1 }).toArray(),
 
         usersCollection
           .aggregate([
@@ -234,17 +230,9 @@ app.get(
           ])
           .toArray(),
 
-        productsCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .limit(5)
-          .toArray(),
+        productsCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
 
-        trackingCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .limit(5)
-          .toArray(),
+        trackingCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
       ]);
 
       // -----------------------------------------
@@ -267,10 +255,7 @@ app.get(
       // -----------------------------------------
       // 3. Status definitions
       // -----------------------------------------
-      const approvedStatuses = [
-        "approved",
-        "payment-confirmed",
-      ];
+      const approvedStatuses = ["approved", "payment-confirmed"];
 
       const productionStatuses = [
         "cutting-completed",
@@ -290,30 +275,23 @@ app.get(
       // 4. Enrich every order
       // -----------------------------------------
       const enrichedOrders = orders.map((order) => {
-        const orderTrackings =
-          trackingMap.get(order.trackingId) || [];
+        const orderTrackings = trackingMap.get(order.trackingId) || [];
 
         const statuses = orderTrackings
-          .map((tracking) =>
-            tracking.status?.trim().toLowerCase(),
-          )
+          .map((tracking) => tracking.status?.trim().toLowerCase())
           .filter(Boolean);
 
         // Latest tracking record
         const latestTracking =
           [...orderTrackings].sort(
-            (a, b) =>
-              new Date(b.createdAt) -
-              new Date(a.createdAt),
+            (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
           )[0] || null;
 
         // -----------------------------------------
         // Approved
         // -----------------------------------------
         const isApproved =
-          approvedStatuses.some((status) =>
-            statuses.includes(status),
-          ) ||
+          approvedStatuses.some((status) => statuses.includes(status)) ||
           order.approvedAt ||
           order.orderStatus === "approved";
 
@@ -321,8 +299,7 @@ app.get(
         // Rejected
         // -----------------------------------------
         const isRejected =
-          statuses.includes("rejected") ||
-          order.orderStatus === "rejected";
+          statuses.includes("rejected") || order.orderStatus === "rejected";
 
         // -----------------------------------------
         // Pending
@@ -337,15 +314,15 @@ app.get(
         // -----------------------------------------
         // In Production
         // -----------------------------------------
-        const isInProduction = productionStatuses.some(
-          (status) => statuses.includes(status),
+        const isInProduction = productionStatuses.some((status) =>
+          statuses.includes(status),
         );
 
         // -----------------------------------------
         // Completed
         // -----------------------------------------
-        const isCompleted = completedStatuses.some(
-          (status) => statuses.includes(status),
+        const isCompleted = completedStatuses.some((status) =>
+          statuses.includes(status),
         );
 
         // -----------------------------------------
@@ -368,8 +345,7 @@ app.get(
         // -----------------------------------------
         // Production stage
         // -----------------------------------------
-        let productionStage =
-          order.productionStage || "not-started";
+        let productionStage = order.productionStage || "not-started";
 
         if (isInProduction) {
           productionStage = "in-production";
@@ -382,22 +358,16 @@ app.get(
         return {
           ...order,
 
-          trackingStatus:
-            latestTracking?.status || null,
+          trackingStatus: latestTracking?.status || null,
 
-          trackingStatusLabel:
-            latestTracking?.statusLabel || null,
+          trackingStatusLabel: latestTracking?.statusLabel || null,
 
-          trackingLocation:
-            latestTracking?.location || null,
+          trackingLocation: latestTracking?.location || null,
 
-          trackingDetails:
-            latestTracking?.details || null,
+          trackingDetails: latestTracking?.details || null,
 
           trackingUpdatedAt:
-            latestTracking?.dateTime ||
-            latestTracking?.createdAt ||
-            null,
+            latestTracking?.dateTime || latestTracking?.createdAt || null,
 
           effectiveStatus,
 
@@ -440,18 +410,11 @@ app.get(
         (order) => order.paymentStatus === "paid",
       ).length;
 
-      const unpaidOrders =
-        totalOrders - paidOrders;
+      const unpaidOrders = totalOrders - paidOrders;
 
       const totalRevenue = enrichedOrders
-        .filter(
-          (order) => order.paymentStatus === "paid",
-        )
-        .reduce(
-          (sum, order) =>
-            sum + Number(order.totalPrice || 0),
-          0,
-        );
+        .filter((order) => order.paymentStatus === "paid")
+        .reduce((sum, order) => sum + Number(order.totalPrice || 0), 0);
 
       // -----------------------------------------
       // 6. Order status chart
@@ -497,25 +460,17 @@ app.get(
       // -----------------------------------------
       // 8. Monthly orders
       // -----------------------------------------
-      const monthlyOrders = monthlyOrdersResult.map(
-        (item) => ({
-          month: `${item._id.year}-${String(
-            item._id.month,
-          ).padStart(2, "0")}`,
+      const monthlyOrders = monthlyOrdersResult.map((item) => ({
+        month: `${item._id.year}-${String(item._id.month).padStart(2, "0")}`,
 
-          orders: item.orders,
-        }),
-      );
+        orders: item.orders,
+      }));
 
       // -----------------------------------------
       // 9. Recent orders
       // -----------------------------------------
       const recentOrders = [...enrichedOrders]
-        .sort(
-          (a, b) =>
-            new Date(b.createdAt) -
-            new Date(a.createdAt),
-        )
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
         .slice(0, 6);
 
       // -----------------------------------------
@@ -554,10 +509,7 @@ app.get(
         recentTrackings,
       });
     } catch (error) {
-      console.error(
-        "Admin dashboard error:",
-        error,
-      );
+      console.error("Admin dashboard error:", error);
 
       res.status(500).send({
         message: "Failed to load admin dashboard",
@@ -565,7 +517,6 @@ app.get(
     }
   },
 );
-
 
 // ** manager dashboard statistics
 app.get(
@@ -579,19 +530,12 @@ app.get(
       // -----------------------------------------
       // 1. Fetch products, orders and trackings
       // -----------------------------------------
-      const [
-        totalProducts,
-        orders,
-        trackings,
-      ] = await Promise.all([
+      const [totalProducts, orders, trackings] = await Promise.all([
         productsCollection.countDocuments(),
 
         ordersCollection.find({}).toArray(),
 
-        trackingCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .toArray(),
+        trackingCollection.find({}).sort({ createdAt: -1 }).toArray(),
       ]);
 
       // -----------------------------------------
@@ -608,18 +552,13 @@ app.get(
           trackingMap.set(trackingId, []);
         }
 
-        trackingMap
-          .get(trackingId)
-          .push(tracking);
+        trackingMap.get(trackingId).push(tracking);
       });
 
       // -----------------------------------------
       // 3. Status definitions
       // -----------------------------------------
-      const approvedStatuses = [
-        "approved",
-        "payment-confirmed",
-      ];
+      const approvedStatuses = ["approved", "payment-confirmed"];
 
       const productionStatuses = [
         "cutting-completed",
@@ -639,29 +578,22 @@ app.get(
       // 4. Enrich orders
       // -----------------------------------------
       const enrichedOrders = orders.map((order) => {
-        const orderTrackings =
-          trackingMap.get(order.trackingId) || [];
+        const orderTrackings = trackingMap.get(order.trackingId) || [];
 
         const statuses = orderTrackings
-          .map((tracking) =>
-            tracking.status?.trim().toLowerCase(),
-          )
+          .map((tracking) => tracking.status?.trim().toLowerCase())
           .filter(Boolean);
 
         const latestTracking =
           [...orderTrackings].sort(
-            (a, b) =>
-              new Date(b.createdAt) -
-              new Date(a.createdAt),
+            (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
           )[0] || null;
 
         // -----------------------------------------
         // Approved
         // -----------------------------------------
         const isApproved =
-          approvedStatuses.some((status) =>
-            statuses.includes(status),
-          ) ||
+          approvedStatuses.some((status) => statuses.includes(status)) ||
           order.approvedAt ||
           order.orderStatus === "approved";
 
@@ -669,8 +601,7 @@ app.get(
         // Rejected
         // -----------------------------------------
         const isRejected =
-          statuses.includes("rejected") ||
-          order.orderStatus === "rejected";
+          statuses.includes("rejected") || order.orderStatus === "rejected";
 
         // -----------------------------------------
         // Pending
@@ -685,18 +616,16 @@ app.get(
         // -----------------------------------------
         // In production
         // -----------------------------------------
-        const isInProduction =
-          productionStatuses.some((status) =>
-            statuses.includes(status),
-          );
+        const isInProduction = productionStatuses.some((status) =>
+          statuses.includes(status),
+        );
 
         // -----------------------------------------
         // Completed
         // -----------------------------------------
-        const isCompleted =
-          completedStatuses.some((status) =>
-            statuses.includes(status),
-          );
+        const isCompleted = completedStatuses.some((status) =>
+          statuses.includes(status),
+        );
 
         // -----------------------------------------
         // Effective order status
@@ -714,8 +643,7 @@ app.get(
         // -----------------------------------------
         // Production stage
         // -----------------------------------------
-        let productionStage =
-          order.productionStage || "not-started";
+        let productionStage = order.productionStage || "not-started";
 
         if (isInProduction) {
           productionStage = "in-production";
@@ -728,22 +656,16 @@ app.get(
         return {
           ...order,
 
-          trackingStatus:
-            latestTracking?.status || null,
+          trackingStatus: latestTracking?.status || null,
 
-          trackingStatusLabel:
-            latestTracking?.statusLabel || null,
+          trackingStatusLabel: latestTracking?.statusLabel || null,
 
-          trackingLocation:
-            latestTracking?.location || null,
+          trackingLocation: latestTracking?.location || null,
 
-          trackingDetails:
-            latestTracking?.details || null,
+          trackingDetails: latestTracking?.details || null,
 
           trackingUpdatedAt:
-            latestTracking?.dateTime ||
-            latestTracking?.createdAt ||
-            null,
+            latestTracking?.dateTime || latestTracking?.createdAt || null,
 
           effectiveStatus,
 
@@ -760,45 +682,34 @@ app.get(
       // -----------------------------------------
       // 5. Statistics
       // -----------------------------------------
-      const totalOrders =
-        enrichedOrders.length;
+      const totalOrders = enrichedOrders.length;
 
-      const pendingOrders =
-        enrichedOrders.filter(
-          (order) => order.isPending,
-        ).length;
+      const pendingOrders = enrichedOrders.filter(
+        (order) => order.isPending,
+      ).length;
 
-      const approvedOrders =
-        enrichedOrders.filter(
-          (order) => order.isApproved,
-        ).length;
+      const approvedOrders = enrichedOrders.filter(
+        (order) => order.isApproved,
+      ).length;
 
-      const rejectedOrders =
-        enrichedOrders.filter(
-          (order) => order.isRejected,
-        ).length;
+      const rejectedOrders = enrichedOrders.filter(
+        (order) => order.isRejected,
+      ).length;
 
-      const inProductionOrders =
-        enrichedOrders.filter(
-          (order) => order.isInProduction,
-        ).length;
+      const inProductionOrders = enrichedOrders.filter(
+        (order) => order.isInProduction,
+      ).length;
 
-      const completedOrders =
-        enrichedOrders.filter(
-          (order) => order.isCompleted,
-        ).length;
+      const completedOrders = enrichedOrders.filter(
+        (order) => order.isCompleted,
+      ).length;
 
       // -----------------------------------------
       // 6. Recent orders
       // -----------------------------------------
-      const recentOrders =
-        [...enrichedOrders]
-          .sort(
-            (a, b) =>
-              new Date(b.createdAt) -
-              new Date(a.createdAt),
-          )
-          .slice(0, 5);
+      const recentOrders = [...enrichedOrders]
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, 5);
 
       // -----------------------------------------
       // 7. Response
@@ -819,10 +730,7 @@ app.get(
         recentOrders,
       });
     } catch (error) {
-      console.error(
-        "Manager dashboard error:",
-        error,
-      );
+      console.error("Manager dashboard error:", error);
 
       res.status(500).send({
         message: "Failed to load manager dashboard",
@@ -1076,7 +984,7 @@ app.get("/users/:email/role", async (req, res) => {
   }
 });
 
-app.get("/users", async (req, res) => {
+app.get("/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
   try {
     await connectToDatabase();
 
@@ -1111,7 +1019,7 @@ app.get("/users", async (req, res) => {
   }
 });
 
-app.patch("/users/:id", async (req, res) => {
+app.patch("/users/:id", verifyFirebaseToken, verifyAdmin, async (req, res) => {
   try {
     await connectToDatabase();
 
@@ -1149,7 +1057,7 @@ app.patch("/users/:id", async (req, res) => {
 });
 
 // products related apis
-app.post("/products", async (req, res) => {
+app.post("/products", verifyFirebaseToken, verifyManager, async (req, res) => {
   try {
     await connectToDatabase();
 
@@ -1206,46 +1114,51 @@ app.get("/products", async (req, res) => {
 });
 
 // manager manage product
-app.get("/products/manager", async (req, res) => {
-  try {
-    await connectToDatabase();
+app.get(
+  "/products/manager",
+  verifyFirebaseToken,
+  verifyManager,
+  async (req, res) => {
+    try {
+      await connectToDatabase();
 
-    const email = req.query.email;
-    const search = req.query.search || "";
+      const email = req.query.email;
+      const search = req.query.search || "";
 
-    // Guard clause: Prevent MongoDB casting errors if email is missing
-    if (!email) {
-      return res
-        .status(400)
-        .json({ message: "Email query parameter is required." });
+      // Guard clause: Prevent MongoDB casting errors if email is missing
+      if (!email) {
+        return res
+          .status(400)
+          .json({ message: "Email query parameter is required." });
+      }
+
+      const products = await productsCollection
+        .find({
+          createdBy: email,
+          $or: [
+            {
+              productName: {
+                $regex: search,
+                $options: "i",
+              },
+            },
+            {
+              category: {
+                $regex: search,
+                $options: "i",
+              },
+            },
+          ],
+        })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(products);
+    } catch (error) {
+      res.status(500).json({ message: error.message });
     }
-
-    const products = await productsCollection
-      .find({
-        createdBy: email,
-        $or: [
-          {
-            productName: {
-              $regex: search,
-              $options: "i",
-            },
-          },
-          {
-            category: {
-              $regex: search,
-              $options: "i",
-            },
-          },
-        ],
-      })
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.send(products);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
+  },
+);
 
 app.get("/products/our-products", async (req, res) => {
   try {
@@ -1277,80 +1190,95 @@ app.get("/products/:id", async (req, res) => {
   }
 });
 
-app.patch("/products/home/:id", async (req, res) => {
-  const id = req.params.id;
-  const { showOnHome } = req.body;
+app.patch(
+  "/products/home/:id",
+  verifyFirebaseToken,
+  verifyAdmin,
+  async (req, res) => {
+    const id = req.params.id;
+    const { showOnHome } = req.body;
 
-  const result = await productsCollection.updateOne(
-    { _id: new ObjectId(id) },
-    {
-      $set: {
-        showOnHome,
+    const result = await productsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          showOnHome,
+        },
       },
-    },
-  );
-
-  res.send(result);
-});
-
-app.patch("/products/:id", async (req, res) => {
-  try {
-    await connectToDatabase();
-
-    const id = req.params.id;
-
-    const {
-      productName,
-      description,
-      category,
-      price,
-      availableQuantity,
-      minimumOrder,
-      images,
-      demoVideo,
-      paymentOptions,
-    } = req.body;
-
-    const query = { _id: new ObjectId(id) };
-
-    const updateData = {
-      productName,
-      description,
-      category,
-      price: Number(price),
-      availableQuantity: Number(availableQuantity),
-      minimumOrder: Number(minimumOrder),
-      images,
-      demoVideo,
-      paymentOptions,
-      updatedAt: new Date(),
-    };
-
-    const result = await productsCollection.updateOne(query, {
-      $set: updateData,
-    });
+    );
 
     res.send(result);
-  } catch (error) {
-    console.error(error);
-    res.status(500).send({
-      message: error.message,
-    });
-  }
-});
+  },
+);
 
-app.delete("/products/:id", async (req, res) => {
-  try {
-    await connectToDatabase();
+app.patch(
+  "/products/:id",
+  verifyFirebaseToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      await connectToDatabase();
 
-    const id = req.params.id;
-    const query = { _id: new ObjectId(id) };
-    const result = await productsCollection.deleteOne(query);
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: error.message });
-  }
-});
+      const id = req.params.id;
+
+      const {
+        productName,
+        description,
+        category,
+        price,
+        availableQuantity,
+        minimumOrder,
+        images,
+        demoVideo,
+        paymentOptions,
+      } = req.body;
+
+      const query = { _id: new ObjectId(id) };
+
+      const updateData = {
+        productName,
+        description,
+        category,
+        price: Number(price),
+        availableQuantity: Number(availableQuantity),
+        minimumOrder: Number(minimumOrder),
+        images,
+        demoVideo,
+        paymentOptions,
+        updatedAt: new Date(),
+      };
+
+      const result = await productsCollection.updateOne(query, {
+        $set: updateData,
+      });
+
+      res.send(result);
+    } catch (error) {
+      console.error(error);
+      res.status(500).send({
+        message: error.message,
+      });
+    }
+  },
+);
+
+app.delete(
+  "/products/:id",
+  verifyFirebaseToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      await connectToDatabase();
+
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await productsCollection.deleteOne(query);
+      res.send(result);
+    } catch (error) {
+      res.status(500).send({ message: error.message });
+    }
+  },
+);
 
 // =====================================================
 // TRACKING HELPER FUNCTION
@@ -1546,7 +1474,8 @@ app.patch("/payment-success", async (req, res) => {
 });
 
 // orders related api
-app.post("/orders", async (req, res) => {
+
+app.post("/orders", verifyFirebaseToken, async (req, res) => {
   try {
     await connectToDatabase();
 
@@ -1567,7 +1496,7 @@ app.post("/orders", async (req, res) => {
     if (
       !productId ||
       !quantity ||
-      !customerEmail || // 2. Ensure email is provided
+      !customerEmail ||
       !firstName ||
       !lastName ||
       !contactNumber ||
@@ -1704,55 +1633,128 @@ app.post("/orders", async (req, res) => {
   }
 });
 
-app.get("/orders", async (req, res) => {
+app.get("/orders", verifyFirebaseToken, verifyAdmin, async (req, res) => {
   try {
     await connectToDatabase();
 
-    const result = await ordersCollection.find().toArray();
-    res.send(result);
-  } catch (error) {
-    res.status(500).send({ message: error.message });
-  }
-});
+    const orders = await ordersCollection.find().toArray();
 
-app.get("/orders/manager", async (req, res) => {
-  try {
-    await connectToDatabase();
+    // 1. Gather all tracking IDs and order IDs to link records
+    const trackingIds = orders.map((o) => o.trackingId).filter(Boolean);
+    const orderIds = orders.map((o) => o._id);
 
-    const orderStatus = req.query.orderStatus;
-    let query = {};
-
-    if (orderStatus) {
-      if (orderStatus === "approved") {
-        query.orderStatus = {
-          $in: [
-            "approved",
-            "processing",
-            "cutting-completed",
-            "sewing-started",
-            "finishing",
-            "qc-checked",
-            "packed",
-            "shipped",
-            "out-for-delivery",
-            "in-transit",
-          ],
-        };
-      } else {
-        query = { orderStatus };
-      }
-    }
-
-    const orders = await ordersCollection
-      .find(query)
+    // Fetch tracking logs sorted by newest first
+    const trackings = await trackingCollection
+      .find({
+        $or: [
+          { trackingId: { $in: trackingIds } },
+          { id: { $in: trackingIds } },
+          { tracking_id: { $in: trackingIds } },
+          { orderId: { $in: orderIds } },
+        ],
+      })
       .sort({ createdAt: -1 })
       .toArray();
 
-    res.send(orders);
+    // 2. Build map prioritizing the latest status
+    const trackingMap = new Map();
+    trackings.forEach((t) => {
+      const tId = t.trackingId || t.id || t.tracking_id;
+      const tStatus = t.status ? t.status.toLowerCase() : "";
+
+      if (tId && !trackingMap.has(tId)) {
+        trackingMap.set(tId, tStatus);
+      }
+      if (t.orderId && !trackingMap.has(t.orderId.toString())) {
+        trackingMap.set(t.orderId.toString(), tStatus);
+      }
+    });
+
+    // 3. Enrich orders with trackingStatus, effective orderStatus, and dynamic productionStage
+    const enrichedOrders = orders.map((o) => {
+      const trackingStatus =
+        trackingMap.get(o.trackingId) ||
+        trackingMap.get(o._id.toString()) ||
+        null;
+
+      const approvedStatuses = [
+        "approved",
+        "payment-confirmed",
+        "cutting-completed",
+        "in-production",
+      ];
+      const isApprovedByTracking = approvedStatuses.includes(trackingStatus);
+
+      const effectiveStatus = isApprovedByTracking ? "approved" : o.orderStatus;
+
+      let effectiveProductionStage = o.productionStage;
+      const currentActiveStatus = trackingStatus || o.orderStatus;
+
+      if (
+        ["cutting-completed", "in-production", "cutting"].includes(
+          currentActiveStatus,
+        )
+      ) {
+        effectiveProductionStage = "in-progress";
+      }
+
+      return {
+        ...o,
+        trackingStatus,
+        orderStatus: effectiveStatus,
+        productionStage: effectiveProductionStage,
+      };
+    });
+
+    res.send(enrichedOrders);
   } catch (error) {
     res.status(500).send({ message: error.message });
   }
 });
+
+app.get(
+  "/orders/manager",
+  verifyFirebaseToken,
+  verifyManager,
+  async (req, res) => {
+    try {
+      await connectToDatabase();
+
+      const orderStatus = req.query.orderStatus;
+      let query = {};
+
+      if (orderStatus) {
+        if (orderStatus === "approved") {
+          query.orderStatus = {
+            $in: [
+              "approved",
+              "processing",
+              "cutting-completed",
+              "sewing-started",
+              "finishing",
+              "qc-checked",
+              "packed",
+              "shipped",
+              "out-for-delivery",
+              "in-transit",
+            ],
+          };
+        } else {
+          query = { orderStatus };
+        }
+      }
+
+      const orders = await ordersCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(orders);
+    } catch (error) {
+      res.status(500).send({ message: error.message });
+    }
+  },
+);
 
 // Get all orders of logged-in buyer
 app.get("/orders/my-orders", verifyFirebaseToken, async (req, res) => {
@@ -1898,57 +1900,62 @@ app.get("/orders/my-orders", verifyFirebaseToken, async (req, res) => {
   }
 });
 
-app.patch("/orders/:id", async (req, res) => {
-  try {
-    await connectToDatabase();
-    const id = req.params.id;
-    const query = { _id: new ObjectId(id) };
+app.patch(
+  "/orders/:id",
+  verifyFirebaseToken,
+  verifyManager,
+  async (req, res) => {
+    try {
+      await connectToDatabase();
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
 
-    const updateData = req.body;
+      const updateData = req.body;
 
-    // If approving, you can also log when it was approved
-    if (
-      updateData.orderStatus === "approved" ||
-      updateData.paymentStatus === "ready-for-payment"
-    ) {
-      updateData.approvedAt = new Date();
-    }
+      // If approving, you can also log when it was approved
+      if (
+        updateData.orderStatus === "approved" ||
+        updateData.paymentStatus === "ready-for-payment"
+      ) {
+        updateData.approvedAt = new Date();
+      }
 
-    const result = await ordersCollection.updateOne(query, {
-      $set: updateData,
-    });
+      const result = await ordersCollection.updateOne(query, {
+        $set: updateData,
+      });
 
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ message: "Order not found" });
-    }
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "Order not found" });
+      }
 
-    // =====================================================
-    // SYNC TRACKING STATUS IF ORDER IS APPROVED
-    // =====================================================
-    if (updateData.orderStatus === "approved") {
-      await trackingCollection.updateOne(
-        { orderId: new ObjectId(id) },
-        {
-          $set: {
-            status: "approved",
-            details:
-              "Order has been approved by management and is ready for payment.",
-            updatedAt: new Date(),
+      // =====================================================
+      // SYNC TRACKING STATUS IF ORDER IS APPROVED
+      // =====================================================
+      if (updateData.orderStatus === "approved") {
+        await trackingCollection.updateOne(
+          { orderId: new ObjectId(id) },
+          {
+            $set: {
+              status: "approved",
+              details:
+                "Order has been approved by management and is ready for payment.",
+              updatedAt: new Date(),
+            },
           },
-        },
-      );
-    }
+        );
+      }
 
-    res.send({
-      success: true,
-      message: "Order updated successfully",
-      result,
-    });
-  } catch (error) {
-    console.error("Order update error:", error);
-    res.status(500).send({ message: error.message });
-  }
-});
+      res.send({
+        success: true,
+        message: "Order updated successfully",
+        result,
+      });
+    } catch (error) {
+      console.error("Order update error:", error);
+      res.status(500).send({ message: error.message });
+    }
+  },
+);
 
 app.get("/orders/:id", async (req, res) => {
   try {
