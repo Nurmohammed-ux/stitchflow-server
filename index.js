@@ -1637,7 +1637,10 @@ app.get("/orders", verifyFirebaseToken, verifyAdmin, async (req, res) => {
   try {
     await connectToDatabase();
 
-    const orders = await ordersCollection.find().toArray();
+    const orders = await ordersCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
 
     // 1. Gather all tracking IDs and order IDs to link records
     const trackingIds = orders.map((o) => o.trackingId).filter(Boolean);
@@ -1990,14 +1993,15 @@ app.post("/tracking", async (req, res) => {
         .send({ message: "Missing required tracking fields" });
     }
 
-    // Convert orderId to ObjectId if it's being sent as a string from the client
     const queryOrderId =
       typeof trackingData.orderId === "string"
         ? new ObjectId(trackingData.orderId)
         : trackingData.orderId;
 
-    // Optional: make sure orderId in the tracking document is also properly an ObjectId if needed
     trackingData.orderId = queryOrderId;
+    
+    // CRITICAL FIX: Ensure every tracking entry gets a precise timestamp
+    trackingData.createdAt = trackingData.createdAt || new Date();
 
     // Insert into tracking/logs collection
     const result = await trackingCollection.insertOne(trackingData);
@@ -2044,6 +2048,90 @@ app.get("/trackings/:trackingId", async (req, res) => {
     });
   }
 });
+
+app.get(
+  "/orders/:orderId/tracking",
+  verifyFirebaseToken,
+  async (req, res) => {
+    try {
+      await connectToDatabase();
+
+      const { orderId } = req.params;
+
+      // =========================
+      // VALIDATE ORDER ID
+      // =========================
+
+      if (!ObjectId.isValid(orderId)) {
+        return res.status(400).send({
+          message: "Invalid order ID",
+        });
+      }
+
+      // =========================
+      // FIND ORDER
+      // =========================
+
+      const order = await ordersCollection.findOne({
+        _id: new ObjectId(orderId),
+      });
+
+      if (!order) {
+        return res.status(404).send({
+          message: "Order not found",
+        });
+      }
+
+      // =========================
+      // CHECK ORDER OWNERSHIP
+      // =========================
+
+      if (order.customerEmail !== req.token_email) {
+        return res.status(403).send({
+          message: "Forbidden access",
+        });
+      }
+
+      // =========================
+      // FIND TRACKING HISTORY
+      // =========================
+
+      const trackingLogs = await trackingCollection
+        .find({
+          trackingId: order.trackingId,
+        })
+        .sort({
+          createdAt: 1,
+        })
+        .toArray();
+
+      // =========================
+      // RESPONSE
+      // =========================
+
+      res.send({
+        order: {
+          _id: order._id,
+          trackingId: order.trackingId,
+          productTitle: order.productTitle,
+          productImage: order.productImage,
+          quantity: order.quantity,
+          paymentStatus: order.paymentStatus,
+          orderStatus: order.orderStatus,
+          createdAt: order.createdAt,
+        },
+
+        trackingLogs,
+      });
+    } catch (error) {
+      console.error("Order tracking error:", error);
+
+      res.status(500).send({
+        message: error.message,
+      });
+    }
+  },
+);
 
 if (process.env.NODE_ENV !== "production") {
   app.listen(port, () => {
