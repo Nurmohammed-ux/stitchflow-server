@@ -1,20 +1,31 @@
-const express = require("express");
-const cors = require("cors");
-require("dotenv").config();
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const stripe = require("stripe")(process.env.STRIPE_SECRET);
-const crypto = require("crypto");
+import express from "express";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import dotenv from "dotenv";
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import Stripe from "stripe";
+import crypto from "crypto";
+import { initializeApp, cert } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import fs from "fs";
+
+dotenv.config();
+
+const stripe = new Stripe(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 3000;
 const app = express();
-const { initializeApp, cert } = require("firebase-admin/app");
-const { getAuth } = require("firebase-admin/auth");
+
+const serviceAccount = JSON.parse(
+  fs.readFileSync(new URL("./stitchflow-client-firebase-adminkey.json", import.meta.url))
+);
+
+let auth;
 
 try {
-  const serviceAccount = require("./stitchflow-client-firebase-adminkey.json");
-
   initializeApp({
     credential: cert(serviceAccount),
   });
+  auth = getAuth();
   console.log("Firebase initialized");
 } catch (err) {
   console.error("Firebase initialization error:", err);
@@ -29,8 +40,14 @@ function generateTrackingId() {
 }
 
 // middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    credentials: true,
+  }),
+);
 app.use(express.json());
+app.use(cookieParser());
 
 // mongodb
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.jd5uu0i.mongodb.net/?appName=Cluster0`;
@@ -61,28 +78,76 @@ async function connectToDatabase() {
   return cachedClient;
 }
 
+// make login jwt token
+app.post("/auth/login", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res.status(401).send({
+        message: "Unauthorized",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    const decodedToken = await auth.verifyIdToken(token);
+
+    res.cookie("accessToken", token, {
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
+      maxAge: 60 * 60 * 1000,
+    });
+
+    res.send({
+      success: true,
+      email: decodedToken.email,
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+
+    res.status(401).send({
+      message: "Invalid authentication",
+    });
+  }
+});
+
+// jwt logout token
+app.post("/auth/logout", (req, res) => {
+  res.clearCookie("accessToken", {
+    httpOnly: true,
+    secure: false,
+    sameSite: "lax",
+  });
+
+  res.send({
+    success: true,
+  });
+});
+
 //Jwt middleware
 const verifyFirebaseToken = async (req, res, next) => {
   try {
-    await connectToDatabase();
-    const authorization = req.headers.authorization;
+    const token = req.cookies.accessToken;
 
-    if (!authorization || !authorization.startsWith("Bearer ")) {
-      return res
-        .status(401)
-        .send({ message: "Unauthorized Access: No token provided" });
+    if (!token) {
+      return res.status(401).send({
+        message: "Unauthorized access",
+      });
     }
 
-    const token = authorization.split(" ")[1];
+    const decodedToken = await auth.verifyIdToken(token);
 
-    const decoded = await getAuth().verifyIdToken(token);
-    req.token_email = decoded.email;
+    req.token_email = decodedToken.email;
+    req.token_uid = decodedToken.uid;
+
     next();
-  } catch (err) {
-    console.error("Token verification error:", err.message);
+  } catch (error) {
+    console.error("Token verification error:", error);
+
     return res.status(401).send({
-      message: "Invalid token",
-      error: err.message,
+      message: "Unauthorized access",
     });
   }
 };
@@ -989,28 +1054,49 @@ app.get("/users", verifyFirebaseToken, verifyAdmin, async (req, res) => {
     await connectToDatabase();
 
     const search = req.query.search || "";
+    const role = req.query.role || "";
+    const status = req.query.status || "";
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 5;
+    const skip = (page - 1) * limit;
+
+    const query = {};
+
+    if (search) {
+      query.$or = [
+        {
+          displayName: {
+            $regex: search,
+            $options: "i",
+          },
+        },
+        {
+          email: {
+            $regex: search,
+            $options: "i",
+          },
+        },
+      ];
+    }
+
+    if (role) {
+      query.role = role;
+    }
+
+    if (status) {
+      query.status = status;
+    }
 
     const users = await usersCollection
-      .find({
-        $or: [
-          {
-            displayName: {
-              $regex: search,
-              $options: "i",
-            },
-          },
-          {
-            email: {
-              $regex: search,
-              $options: "i",
-            },
-          },
-        ],
-      })
+      .find(query)
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .toArray();
 
-    res.send(users);
+    const totalUsers = await usersCollection.countDocuments(query);
+
+    res.send({ users, totalUsers });
   } catch (error) {
     console.log(error);
     res.status(500).send({
@@ -1024,17 +1110,24 @@ app.patch("/users/:id", verifyFirebaseToken, verifyAdmin, async (req, res) => {
     await connectToDatabase();
 
     const id = req.params.id;
-
-    const { role, status } = req.body;
+    const { role, status, suspendReason, suspendFeedback } = req.body;
 
     const updateData = {};
 
-    if (role) {
+    if (role !== undefined) {
       updateData.role = role;
     }
 
-    if (status) {
+    if (status !== undefined) {
       updateData.status = status;
+    }
+
+    if (suspendReason !== undefined) {
+      updateData.suspendReason = suspendReason;
+    }
+
+    if (suspendFeedback !== undefined) {
+      updateData.suspendFeedback = suspendFeedback;
     }
 
     const result = await usersCollection.updateOne(
@@ -1637,6 +1730,11 @@ app.get("/orders", verifyFirebaseToken, verifyAdmin, async (req, res) => {
   try {
     await connectToDatabase();
 
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 5;
+    const search = (req.query.search || "").toLowerCase();
+    const statusFilter = req.query.status || "all";
+
     const orders = await ordersCollection
       .find()
       .sort({ createdAt: -1 })
@@ -1709,7 +1807,42 @@ app.get("/orders", verifyFirebaseToken, verifyAdmin, async (req, res) => {
       };
     });
 
-    res.send(enrichedOrders);
+    // 4. Calculate Stats across all enriched orders
+    const stats = {
+      total: enrichedOrders.length,
+      pending: enrichedOrders.filter((o) => o.orderStatus === "pending-review").length,
+      approved: enrichedOrders.filter((o) => o.orderStatus === "approved").length,
+      rejected: enrichedOrders.filter((o) => o.orderStatus === "rejected").length,
+      paid: enrichedOrders.filter((o) => o.paymentStatus === "paid").length,
+    };
+
+    // 5. Apply Search & Status Filters on Enriched Orders
+    const filteredOrders = enrichedOrders.filter((o) => {
+      const matchesSearch =
+        !search ||
+        o.trackingId?.toLowerCase().includes(search) ||
+        o.customerEmail?.toLowerCase().includes(search) ||
+        o.productTitle?.toLowerCase().includes(search) ||
+        o.firstName?.toLowerCase().includes(search) ||
+        o.lastName?.toLowerCase().includes(search);
+
+      const matchesStatus =
+        statusFilter === "all" || o.orderStatus === statusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+
+    // 6. Paginate Results
+    const totalOrdersCount = filteredOrders.length;
+    const totalPages = Math.ceil(totalOrdersCount / limit) || 1;
+    const skip = (page - 1) * limit;
+    const paginatedOrders = filteredOrders.slice(skip, skip + limit);
+
+    res.send({
+      orders: paginatedOrders,
+      totalPages,
+      stats,
+    });
   } catch (error) {
     res.status(500).send({ message: error.message });
   }
@@ -1978,77 +2111,6 @@ app.get("/orders/:id", async (req, res) => {
   }
 });
 
-// Trackings related apis
-app.post("/tracking", async (req, res) => {
-  try {
-    const trackingData = req.body;
-
-    if (
-      !trackingData.orderId ||
-      !trackingData.trackingId ||
-      !trackingData.status
-    ) {
-      return res
-        .status(400)
-        .send({ message: "Missing required tracking fields" });
-    }
-
-    const queryOrderId =
-      typeof trackingData.orderId === "string"
-        ? new ObjectId(trackingData.orderId)
-        : trackingData.orderId;
-
-    trackingData.orderId = queryOrderId;
-    
-    // CRITICAL FIX: Ensure every tracking entry gets a precise timestamp
-    trackingData.createdAt = trackingData.createdAt || new Date();
-
-    // Insert into tracking/logs collection
-    const result = await trackingCollection.insertOne(trackingData);
-
-    // Keep the main order document synced with the latest status
-    await ordersCollection.updateOne(
-      { _id: queryOrderId },
-      {
-        $set: {
-          orderStatus: trackingData.status,
-          updatedAt: new Date(),
-        },
-      },
-    );
-
-    res.send({
-      success: true,
-      message: "Tracking update added successfully",
-      result,
-    });
-  } catch (error) {
-    console.error("Add tracking error:", error);
-    res.status(500).send({ message: error.message });
-  }
-});
-
-app.get("/trackings/:trackingId", async (req, res) => {
-  try {
-    await connectToDatabase();
-
-    const trackingId = req.params.trackingId;
-
-    // Fetch all logs matching this tracking ID, sorted by creation date (oldest to newest for timelines)
-    const trackingLogs = await trackingCollection
-      .find({ trackingId })
-      .sort({ createdAt: 1 })
-      .toArray();
-
-    res.send(trackingLogs);
-  } catch (error) {
-    console.error("Fetch tracking error:", error);
-    res.status(500).send({
-      message: error.message,
-    });
-  }
-});
-
 app.get(
   "/orders/:orderId/tracking",
   verifyFirebaseToken,
@@ -2132,6 +2194,79 @@ app.get(
     }
   },
 );
+
+
+// Trackings related apis
+app.post("/tracking", async (req, res) => {
+  try {
+    const trackingData = req.body;
+
+    if (
+      !trackingData.orderId ||
+      !trackingData.trackingId ||
+      !trackingData.status
+    ) {
+      return res
+        .status(400)
+        .send({ message: "Missing required tracking fields" });
+    }
+
+    const queryOrderId =
+      typeof trackingData.orderId === "string"
+        ? new ObjectId(trackingData.orderId)
+        : trackingData.orderId;
+
+    trackingData.orderId = queryOrderId;
+    
+    // CRITICAL FIX: Ensure every tracking entry gets a precise timestamp
+    trackingData.createdAt = trackingData.createdAt || new Date();
+
+    // Insert into tracking/logs collection
+    const result = await trackingCollection.insertOne(trackingData);
+
+    // Keep the main order document synced with the latest status
+    await ordersCollection.updateOne(
+      { _id: queryOrderId },
+      {
+        $set: {
+          orderStatus: trackingData.status,
+          updatedAt: new Date(),
+        },
+      },
+    );
+
+    res.send({
+      success: true,
+      message: "Tracking update added successfully",
+      result,
+    });
+  } catch (error) {
+    console.error("Add tracking error:", error);
+    res.status(500).send({ message: error.message });
+  }
+});
+
+app.get("/trackings/:trackingId", async (req, res) => {
+  try {
+    await connectToDatabase();
+
+    const trackingId = req.params.trackingId;
+
+    // Fetch all logs matching this tracking ID, sorted by creation date (oldest to newest for timelines)
+    const trackingLogs = await trackingCollection
+      .find({ trackingId })
+      .sort({ createdAt: 1 })
+      .toArray();
+
+    res.send(trackingLogs);
+  } catch (error) {
+    console.error("Fetch tracking error:", error);
+    res.status(500).send({
+      message: error.message,
+    });
+  }
+});
+
 
 if (process.env.NODE_ENV !== "production") {
   app.listen(port, () => {
