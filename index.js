@@ -15,9 +15,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 3000;
 const app = express();
 
-const serviceAccount = JSON.parse(
-  fs.readFileSync(new URL("./stitchflow-client-firebase-adminkey.json", import.meta.url))
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8",
 );
+const serviceAccount = JSON.parse(decoded);
 
 let auth;
 
@@ -95,8 +96,8 @@ app.post("/auth/login", async (req, res) => {
 
     res.cookie("accessToken", token, {
       httpOnly: true,
-      secure: false,
-      sameSite: "lax",
+      secure: true,
+      sameSite: "none",
       maxAge: 60 * 60 * 1000,
     });
 
@@ -117,8 +118,8 @@ app.post("/auth/login", async (req, res) => {
 app.post("/auth/logout", (req, res) => {
   res.clearCookie("accessToken", {
     httpOnly: true,
-    secure: false,
-    sameSite: "lax",
+    secure: true,
+    sameSite: "none",
   });
 
   res.send({
@@ -1810,9 +1811,12 @@ app.get("/orders", verifyFirebaseToken, verifyAdmin, async (req, res) => {
     // 4. Calculate Stats across all enriched orders
     const stats = {
       total: enrichedOrders.length,
-      pending: enrichedOrders.filter((o) => o.orderStatus === "pending-review").length,
-      approved: enrichedOrders.filter((o) => o.orderStatus === "approved").length,
-      rejected: enrichedOrders.filter((o) => o.orderStatus === "rejected").length,
+      pending: enrichedOrders.filter((o) => o.orderStatus === "pending-review")
+        .length,
+      approved: enrichedOrders.filter((o) => o.orderStatus === "approved")
+        .length,
+      rejected: enrichedOrders.filter((o) => o.orderStatus === "rejected")
+        .length,
       paid: enrichedOrders.filter((o) => o.paymentStatus === "paid").length,
     };
 
@@ -2111,90 +2115,85 @@ app.get("/orders/:id", async (req, res) => {
   }
 });
 
-app.get(
-  "/orders/:orderId/tracking",
-  verifyFirebaseToken,
-  async (req, res) => {
-    try {
-      await connectToDatabase();
+app.get("/orders/:orderId/tracking", verifyFirebaseToken, async (req, res) => {
+  try {
+    await connectToDatabase();
 
-      const { orderId } = req.params;
+    const { orderId } = req.params;
 
-      // =========================
-      // VALIDATE ORDER ID
-      // =========================
+    // =========================
+    // VALIDATE ORDER ID
+    // =========================
 
-      if (!ObjectId.isValid(orderId)) {
-        return res.status(400).send({
-          message: "Invalid order ID",
-        });
-      }
-
-      // =========================
-      // FIND ORDER
-      // =========================
-
-      const order = await ordersCollection.findOne({
-        _id: new ObjectId(orderId),
-      });
-
-      if (!order) {
-        return res.status(404).send({
-          message: "Order not found",
-        });
-      }
-
-      // =========================
-      // CHECK ORDER OWNERSHIP
-      // =========================
-
-      if (order.customerEmail !== req.token_email) {
-        return res.status(403).send({
-          message: "Forbidden access",
-        });
-      }
-
-      // =========================
-      // FIND TRACKING HISTORY
-      // =========================
-
-      const trackingLogs = await trackingCollection
-        .find({
-          trackingId: order.trackingId,
-        })
-        .sort({
-          createdAt: 1,
-        })
-        .toArray();
-
-      // =========================
-      // RESPONSE
-      // =========================
-
-      res.send({
-        order: {
-          _id: order._id,
-          trackingId: order.trackingId,
-          productTitle: order.productTitle,
-          productImage: order.productImage,
-          quantity: order.quantity,
-          paymentStatus: order.paymentStatus,
-          orderStatus: order.orderStatus,
-          createdAt: order.createdAt,
-        },
-
-        trackingLogs,
-      });
-    } catch (error) {
-      console.error("Order tracking error:", error);
-
-      res.status(500).send({
-        message: error.message,
+    if (!ObjectId.isValid(orderId)) {
+      return res.status(400).send({
+        message: "Invalid order ID",
       });
     }
-  },
-);
 
+    // =========================
+    // FIND ORDER
+    // =========================
+
+    const order = await ordersCollection.findOne({
+      _id: new ObjectId(orderId),
+    });
+
+    if (!order) {
+      return res.status(404).send({
+        message: "Order not found",
+      });
+    }
+
+    // =========================
+    // CHECK ORDER OWNERSHIP
+    // =========================
+
+    if (order.customerEmail !== req.token_email) {
+      return res.status(403).send({
+        message: "Forbidden access",
+      });
+    }
+
+    // =========================
+    // FIND TRACKING HISTORY
+    // =========================
+
+    const trackingLogs = await trackingCollection
+      .find({
+        trackingId: order.trackingId,
+      })
+      .sort({
+        createdAt: 1,
+      })
+      .toArray();
+
+    // =========================
+    // RESPONSE
+    // =========================
+
+    res.send({
+      order: {
+        _id: order._id,
+        trackingId: order.trackingId,
+        productTitle: order.productTitle,
+        productImage: order.productImage,
+        quantity: order.quantity,
+        paymentStatus: order.paymentStatus,
+        orderStatus: order.orderStatus,
+        createdAt: order.createdAt,
+      },
+
+      trackingLogs,
+    });
+  } catch (error) {
+    console.error("Order tracking error:", error);
+
+    res.status(500).send({
+      message: error.message,
+    });
+  }
+});
 
 // Trackings related apis
 app.post("/tracking", async (req, res) => {
@@ -2217,7 +2216,7 @@ app.post("/tracking", async (req, res) => {
         : trackingData.orderId;
 
     trackingData.orderId = queryOrderId;
-    
+
     // CRITICAL FIX: Ensure every tracking entry gets a precise timestamp
     trackingData.createdAt = trackingData.createdAt || new Date();
 
@@ -2267,9 +2266,10 @@ app.get("/trackings/:trackingId", async (req, res) => {
   }
 });
 
-
 if (process.env.NODE_ENV !== "production") {
   app.listen(port, () => {
     console.log(`StitchFlow Server running on port ${port}`);
   });
 }
+
+export default app;
