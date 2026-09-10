@@ -41,9 +41,22 @@ function generateTrackingId() {
 }
 
 // middleware
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://stitchflow-client.web.app",
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like Postman or server-to-server)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.indexOf(origin) === -1) {
+        return callback(new Error("The CORS policy for this site does not allow access from the specified Origin."), false);
+      }
+      return callback(null, true);
+    },
     credentials: true,
   }),
 );
@@ -192,6 +205,7 @@ const verifyManager = async (req, res, next) => {
   next();
 };
 
+
 // ** admin dashboard statistics
 app.get(
   "/dashboard/admin-stats",
@@ -200,59 +214,232 @@ app.get(
   async (req, res) => {
     try {
       await connectToDatabase();
-
+ 
       const email = req.query.email;
-
-      // Extra safety check
+      const range = req.query.range || "30days";
+ 
       if (!email || email !== req.token_email) {
         return res.status(403).send({
           message: "Forbidden access",
         });
       }
-
+ 
       const admin = await usersCollection.findOne({
         email,
       });
-
+ 
       if (!admin || admin.role !== "admin") {
         return res.status(403).send({
           message: "Forbidden. Admin access required.",
         });
       }
-
-      // -----------------------------------------
-      // 1. Fetch all required data
-      // -----------------------------------------
+ 
+      const now = new Date();
+ 
+      const startOfToday = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+      );
+ 
+      const startOfTomorrow = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + 1,
+      );
+ 
+      const startOf7Days = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() - 6,
+      );
+ 
+      const startOf30Days = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() - 29,
+      );
+ 
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+ 
+      // Start of the 6-month window used for the monthly orders chart
+      const startOf6Months = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+ 
+      let selectedStartDate = startOf30Days;
+ 
+      if (range === "today") {
+        selectedStartDate = startOfToday;
+      }
+ 
+      if (range === "7days") {
+        selectedStartDate = startOf7Days;
+      }
+ 
+      if (range === "30days") {
+        selectedStartDate = startOf30Days;
+      }
+ 
+      // Bulletproof local date helper with ObjectId timestamp fallback
+      const getLocalDateKey = (doc) => {
+        let dateObj = null;
+ 
+        if (doc && doc.createdAt) {
+          dateObj = new Date(doc.createdAt);
+        }
+ 
+        if ((!dateObj || isNaN(dateObj.getTime())) && doc && doc._id) {
+          try {
+            if (typeof doc._id.getTimestamp === "function") {
+              dateObj = doc._id.getTimestamp();
+            } else {
+              const timestamp = parseInt(String(doc._id).substring(0, 8), 16) * 1000;
+              dateObj = new Date(timestamp);
+            }
+          } catch (e) {
+            // Ignore conversion error
+          }
+        }
+ 
+        if (!dateObj || isNaN(dateObj.getTime())) return null;
+ 
+        const year = dateObj.getFullYear();
+        const month = String(dateObj.getMonth() + 1).padStart(2, "0");
+        const day = String(dateObj.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      };
+ 
+      const approvedStatuses = ["approved", "payment-confirmed"];
+ 
+      const productionStatuses = [
+        "cutting-completed",
+        "sewing-started",
+        "finishing",
+        "qc-checked",
+      ];
+ 
+      const completedStatuses = [
+        "packed",
+        "shipped",
+        "out-for-delivery",
+        "delivered",
+      ];
+ 
       const [
         totalUsers,
         totalProducts,
         totalOrders,
         totalTrackings,
-        orders,
-        trackings,
+ 
+        productsToday,
+        products7Days,
+        products30Days,
+ 
+        newUsersToday,
+        newUsers7Days,
+        newUsers30Days,
+ 
+        activeManagers,
+ 
+        ordersThisMonth,
+ 
+        ordersInSelectedRange,
+ 
+        allOrders,
+ 
+        allTrackings,
+ 
         userRoleResult,
+ 
         monthlyOrdersResult,
+ 
+        recentOrders,
+ 
         recentProducts,
+ 
         recentTrackings,
       ] = await Promise.all([
         usersCollection.countDocuments(),
-
         productsCollection.countDocuments(),
-
         ordersCollection.countDocuments(),
-
         trackingCollection.countDocuments(),
-
+ 
+        productsCollection.countDocuments({
+          createdAt: {
+            $gte: startOfToday,
+            $lt: startOfTomorrow,
+          },
+        }),
+ 
+        productsCollection.countDocuments({
+          createdAt: {
+            $gte: startOf7Days,
+          },
+        }),
+ 
+        productsCollection.countDocuments({
+          createdAt: {
+            $gte: startOf30Days,
+          },
+        }),
+ 
+        usersCollection.countDocuments({
+          createdAt: {
+            $gte: startOfToday,
+            $lt: startOfTomorrow,
+          },
+        }),
+ 
+        usersCollection.countDocuments({
+          createdAt: {
+            $gte: startOf7Days,
+          },
+        }),
+ 
+        usersCollection.countDocuments({
+          createdAt: {
+            $gte: startOf30Days,
+          },
+        }),
+ 
+        usersCollection.countDocuments({
+          role: "manager",
+          $or: [{ status: { $exists: false } }, { status: { $ne: "suspended" } }],
+        }),
+ 
+        ordersCollection.countDocuments({
+          createdAt: {
+            $gte: startOfMonth,
+          },
+        }),
+ 
+        ordersCollection
+          .find({
+            createdAt: {
+              $gte: selectedStartDate,
+            },
+          })
+          .sort({
+            createdAt: 1,
+          })
+          .toArray(),
+ 
         ordersCollection.find({}).toArray(),
-
-        trackingCollection.find({}).sort({ createdAt: -1 }).toArray(),
-
+ 
+        trackingCollection
+          .find({})
+          .sort({
+            createdAt: -1,
+          })
+          .toArray(),
+ 
         usersCollection
           .aggregate([
             {
               $group: {
                 _id: "$role",
-                count: { $sum: 1 },
+                count: {
+                  $sum: 1,
+                },
               },
             },
             {
@@ -262,17 +449,14 @@ app.get(
             },
           ])
           .toArray(),
-
+ 
+        // ============ MONTHLY ORDERS AGGREGATION (restored) ============
         ordersCollection
           .aggregate([
             {
               $match: {
                 createdAt: {
-                  $gte: new Date(
-                    new Date().getFullYear(),
-                    new Date().getMonth() - 5,
-                    1,
-                  ),
+                  $gte: startOf6Months,
                 },
               },
             },
@@ -295,196 +479,191 @@ app.get(
             },
           ])
           .toArray(),
-
-        productsCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
-
-        trackingCollection.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+ 
+        ordersCollection
+          .find({})
+          .sort({
+            createdAt: -1,
+          })
+          .limit(6)
+          .toArray(),
+ 
+        productsCollection
+          .find({})
+          .sort({
+            createdAt: -1,
+          })
+          .limit(5)
+          .toArray(),
+ 
+        trackingCollection
+          .find({})
+          .sort({
+            createdAt: -1,
+          })
+          .limit(5)
+          .toArray(),
       ]);
-
-      // -----------------------------------------
-      // 2. Group tracking records by trackingId
-      // -----------------------------------------
+ 
+      // ==================================================
+      // GROUP TRACKINGS BY TRACKING ID
+      // ==================================================
+ 
       const trackingMap = new Map();
-
-      trackings.forEach((tracking) => {
+ 
+      allTrackings.forEach((tracking) => {
         const trackingId = tracking.trackingId;
-
-        if (!trackingId) return;
-
+ 
+        if (!trackingId) {
+          return;
+        }
+ 
         if (!trackingMap.has(trackingId)) {
           trackingMap.set(trackingId, []);
         }
-
+ 
         trackingMap.get(trackingId).push(tracking);
       });
-
-      // -----------------------------------------
-      // 3. Status definitions
-      // -----------------------------------------
-      const approvedStatuses = ["approved", "payment-confirmed"];
-
-      const productionStatuses = [
-        "cutting-completed",
-        "sewing-started",
-        "finishing",
-        "qc-checked",
-      ];
-
-      const completedStatuses = [
-        "packed",
-        "shipped",
-        "out-for-delivery",
-        "delivered",
-      ];
-
-      // -----------------------------------------
-      // 4. Enrich every order
-      // -----------------------------------------
-      const enrichedOrders = orders.map((order) => {
+ 
+      // ==================================================
+      // ENRICH ORDERS
+      // ==================================================
+ 
+      const enrichedOrders = allOrders.map((order) => {
         const orderTrackings = trackingMap.get(order.trackingId) || [];
-
+ 
         const statuses = orderTrackings
           .map((tracking) => tracking.status?.trim().toLowerCase())
           .filter(Boolean);
-
-        // Latest tracking record
+ 
         const latestTracking =
           [...orderTrackings].sort(
             (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
           )[0] || null;
-
-        // -----------------------------------------
-        // Approved
-        // -----------------------------------------
+ 
         const isApproved =
           approvedStatuses.some((status) => statuses.includes(status)) ||
-          order.approvedAt ||
+          Boolean(order.approvedAt) ||
           order.orderStatus === "approved";
-
-        // -----------------------------------------
-        // Rejected
-        // -----------------------------------------
+ 
         const isRejected =
           statuses.includes("rejected") || order.orderStatus === "rejected";
-
-        // -----------------------------------------
-        // Pending
-        // -----------------------------------------
+ 
         const isPending =
           !isApproved &&
           !isRejected &&
           (statuses.includes("pending-review") ||
             order.orderStatus === "pending-review" ||
             order.orderStatus === "pending");
-
-        // -----------------------------------------
-        // In Production
-        // -----------------------------------------
-        const isInProduction = productionStatuses.some((status) =>
-          statuses.includes(status),
-        );
-
-        // -----------------------------------------
-        // Completed
-        // -----------------------------------------
-        const isCompleted = completedStatuses.some((status) =>
-          statuses.includes(status),
-        );
-
-        // -----------------------------------------
-        // Effective status
-        //
-        // This is the main order status.
-        // Production/completed don't remove
-        // the fact that the order was approved.
-        // -----------------------------------------
+ 
+        const isInProduction =
+          productionStatuses.some((status) => statuses.includes(status)) ||
+          productionStatuses.includes(order.orderStatus);
+ 
+        const isCompleted =
+          completedStatuses.some((status) => statuses.includes(status)) ||
+          completedStatuses.includes(order.orderStatus);
+ 
         let effectiveStatus = "unknown";
-
+ 
         if (isRejected) {
           effectiveStatus = "rejected";
+        } else if (isCompleted) {
+          effectiveStatus = "completed";
+        } else if (isInProduction) {
+          effectiveStatus = "in-production";
         } else if (isApproved) {
           effectiveStatus = "approved";
         } else if (isPending) {
-          effectiveStatus = "pending-review";
+          effectiveStatus = "pending";
         }
-
-        // -----------------------------------------
-        // Production stage
-        // -----------------------------------------
+ 
         let productionStage = order.productionStage || "not-started";
-
+ 
         if (isInProduction) {
           productionStage = "in-production";
         }
-
+ 
         if (isCompleted) {
           productionStage = "completed";
         }
-
+ 
         return {
           ...order,
-
+ 
           trackingStatus: latestTracking?.status || null,
-
+ 
           trackingStatusLabel: latestTracking?.statusLabel || null,
-
+ 
           trackingLocation: latestTracking?.location || null,
-
+ 
           trackingDetails: latestTracking?.details || null,
-
+ 
           trackingUpdatedAt:
             latestTracking?.dateTime || latestTracking?.createdAt || null,
-
+ 
           effectiveStatus,
-
+ 
           productionStage,
-
-          // Useful for dashboard statistics
+ 
           isApproved: Boolean(isApproved),
-          isInProduction,
-          isCompleted,
-          isRejected,
-          isPending,
+          isInProduction: Boolean(isInProduction),
+          isCompleted: Boolean(isCompleted),
+          isRejected: Boolean(isRejected),
+          isPending: Boolean(isPending),
         };
       });
-
-      // -----------------------------------------
-      // 5. Dashboard statistics
-      // -----------------------------------------
-
-      const pendingOrders = enrichedOrders.filter(
-        (order) => order.isPending,
-      ).length;
-
-      const approvedOrders = enrichedOrders.filter(
-        (order) => order.isApproved,
-      ).length;
-
-      const rejectedOrders = enrichedOrders.filter(
-        (order) => order.isRejected,
-      ).length;
-
+ 
+      // ==================================================
+      // ORDER STATISTICS
+      // ==================================================
+ 
+      const pendingOrders = enrichedOrders.filter((order) => order.isPending).length;
+ 
+      const approvedOrders = enrichedOrders.filter((order) => order.isApproved).length;
+ 
+      const rejectedOrders = enrichedOrders.filter((order) => order.isRejected).length;
+ 
       const inProductionOrders = enrichedOrders.filter(
         (order) => order.isInProduction,
       ).length;
-
-      const completedOrders = enrichedOrders.filter(
-        (order) => order.isCompleted,
-      ).length;
-
+ 
+      const completedOrders = enrichedOrders.filter((order) => order.isCompleted).length;
+ 
+      // ==================================================
+      // PAYMENT STATISTICS
+      // ==================================================
+ 
       const paidOrders = enrichedOrders.filter(
-        (order) => order.paymentStatus === "paid",
+        (order) => order.paymentStatus?.toLowerCase() === "paid",
       ).length;
-
+ 
       const unpaidOrders = totalOrders - paidOrders;
-
+ 
       const totalRevenue = enrichedOrders
-        .filter((order) => order.paymentStatus === "paid")
+        .filter((order) => order.paymentStatus?.toLowerCase() === "paid")
         .reduce((sum, order) => sum + Number(order.totalPrice || 0), 0);
-
-      // -----------------------------------------
-      // 6. Order status chart
-      // -----------------------------------------
+ 
+      // ==================================================
+      // USERS BY ROLE
+      // ==================================================
+ 
+      const usersByRole = {
+        buyer: 0,
+        manager: 0,
+        admin: 0,
+      };
+ 
+      userRoleResult.forEach((item) => {
+        if (item._id) {
+          usersByRole[item._id] = item.count;
+        }
+      });
+ 
+      // ==================================================
+      // ORDER STATUS CHART
+      // ==================================================
+ 
       const orderStatus = [
         {
           status: "pending",
@@ -507,76 +686,196 @@ app.get(
           count: completedOrders,
         },
       ].filter((item) => item.count > 0);
-
-      // -----------------------------------------
-      // 7. Users by role
-      // -----------------------------------------
-      const usersByRole = {
-        buyer: 0,
-        manager: 0,
-        admin: 0,
-      };
-
-      userRoleResult.forEach((item) => {
-        if (item._id) {
-          usersByRole[item._id] = item.count;
-        }
-      });
-
-      // -----------------------------------------
-      // 8. Monthly orders
-      // -----------------------------------------
+ 
+      // ==================================================
+      // MONTHLY ORDERS (restored — used by the "Monthly orders" area chart)
+      // ==================================================
+ 
       const monthlyOrders = monthlyOrdersResult.map((item) => ({
         month: `${item._id.year}-${String(item._id.month).padStart(2, "0")}`,
-
         orders: item.orders,
       }));
-
-      // -----------------------------------------
-      // 9. Recent orders
-      // -----------------------------------------
-      const recentOrders = [...enrichedOrders]
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .slice(0, 6);
-
-      // -----------------------------------------
-      // 10. Response
-      // -----------------------------------------
+ 
+      // ==================================================
+      // ORDERS BY DATE
+      // ==================================================
+ 
+      const ordersByDateMap = new Map();
+ 
+      ordersInSelectedRange.forEach((order) => {
+        const key = getLocalDateKey(order);
+        if (!key) return;
+ 
+        if (!ordersByDateMap.has(key)) {
+          ordersByDateMap.set(key, 0);
+        }
+ 
+        ordersByDateMap.set(key, ordersByDateMap.get(key) + 1);
+      });
+ 
+      const ordersByDate = [];
+      const cursorDate = new Date(selectedStartDate);
+ 
+      while (cursorDate < startOfTomorrow) {
+        const key = getLocalDateKey({ createdAt: cursorDate });
+        if (key) {
+          ordersByDate.push({
+            date: key,
+            orders: ordersByDateMap.get(key) || 0,
+          });
+        }
+        cursorDate.setDate(cursorDate.getDate() + 1);
+      }
+ 
+      // ==================================================
+      // PRODUCTS BY DATE
+      // ==================================================
+ 
+      const productsForChart = await productsCollection
+        .find({
+          createdAt: {
+            $gte: selectedStartDate,
+          },
+        })
+        .sort({
+          createdAt: 1,
+        })
+        .toArray();
+ 
+      const productsByDateMap = new Map();
+ 
+      productsForChart.forEach((product) => {
+        const key = getLocalDateKey(product);
+        if (!key) return;
+ 
+        if (!productsByDateMap.has(key)) {
+          productsByDateMap.set(key, 0);
+        }
+ 
+        productsByDateMap.set(key, productsByDateMap.get(key) + 1);
+      });
+ 
+      const productsByDate = [];
+      const productCursor = new Date(selectedStartDate);
+ 
+      while (productCursor < startOfTomorrow) {
+        const key = getLocalDateKey({ createdAt: productCursor });
+        if (key) {
+          productsByDate.push({
+            date: key,
+            products: productsByDateMap.get(key) || 0,
+          });
+        }
+        productCursor.setDate(productCursor.getDate() + 1);
+      }
+ 
+      // ==================================================
+      // USERS BY DATE
+      // ==================================================
+ 
+      const usersForChart = await usersCollection
+        .find({
+          createdAt: {
+            $gte: selectedStartDate,
+          },
+        })
+        .sort({
+          createdAt: 1,
+        })
+        .toArray();
+ 
+      const usersByDateMap = new Map();
+ 
+      usersForChart.forEach((user) => {
+        const key = getLocalDateKey(user);
+        if (!key) return;
+ 
+        if (!usersByDateMap.has(key)) {
+          usersByDateMap.set(key, 0);
+        }
+ 
+        usersByDateMap.set(key, usersByDateMap.get(key) + 1);
+      });
+ 
+      const usersByDate = [];
+      const userCursor = new Date(selectedStartDate);
+ 
+      while (userCursor < startOfTomorrow) {
+        const key = getLocalDateKey({ createdAt: userCursor });
+        if (key) {
+          usersByDate.push({
+            date: key,
+            users: usersByDateMap.get(key) || 0,
+          });
+        }
+        userCursor.setDate(userCursor.getDate() + 1);
+      }
+ 
+      // ==================================================
+      // RESPONSE
+      // ==================================================
+ 
       res.send({
+        range,
+ 
         stats: {
           totalUsers,
           totalProducts,
           totalOrders,
           totalTrackings,
-
+ 
+          productsToday,
+          products7Days,
+          products30Days,
+ 
+          ordersThisMonth,
+ 
+          newUsersToday,
+          newUsers7Days,
+          newUsers30Days,
+ 
+          activeManagers,
+ 
           pendingOrders,
           approvedOrders,
           rejectedOrders,
-
           inProductionOrders,
           completedOrders,
-
+ 
           paidOrders,
           unpaidOrders,
-
+ 
           totalRevenue,
         },
-
+ 
         usersByRole,
-
+ 
         orderStatus,
-
+ 
+        // Kept at top level so existing frontend code (`data?.monthlyOrders`) keeps working
         monthlyOrders,
-
-        recentOrders,
-
+ 
+        charts: {
+          ordersByDate,
+          productsByDate,
+          usersByDate,
+        },
+ 
+        recentOrders: [...recentOrders].map((order) => {
+          const enriched = enrichedOrders.find(
+            (item) => String(item._id) === String(order._id),
+          );
+ 
+          return enriched || order;
+        }),
+ 
         recentProducts,
-
+ 
         recentTrackings,
       });
     } catch (error) {
       console.error("Admin dashboard error:", error);
-
+ 
       res.status(500).send({
         message: "Failed to load admin dashboard",
       });
